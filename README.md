@@ -1,0 +1,1 @@
+Just a repository for me to dump code in as I learn Vulkan and follow through the Udemy course at https://www.udemy.com/course/learn-the-vulkan-api-with-cpp. However all code will be in Rust rather than C++.
