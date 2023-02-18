@@ -24,7 +24,14 @@ use {
 };
 
 struct QueueFamilyIndices {
-    graphics_family: u32,
+    graphics_family: Option<u32>,
+    presentation_family: Option<u32>,
+}
+
+impl QueueFamilyIndices {
+    fn is_complete(&self) -> bool {
+        self.graphics_family.is_some() && self.presentation_family.is_some()
+    }
 }
 
 struct QueueHandles {
@@ -43,16 +50,18 @@ fn main() -> Result<()> {
             let surface = create_surface(&entry, &instance, &window)?;
             let debug_utils = DebugUtils::new(&entry, &instance);
             let messenger = create_debug_utils_messenger(&debug_utils)?;
-            let (physical_device, queue_family_indices) = get_physical_device(&instance)?;
+            let surface_ext = Surface::new(&entry, &instance);
+            let (physical_device, queue_family_indices) =
+                get_physical_device(&instance, &surface_ext, surface)?;
             let (logical_device, _queues) =
                 create_logical_device(&instance, physical_device, &queue_family_indices)?;
             let error_code = run_event_loop(event_loop, window);
             cleanup(
-                entry,
                 instance,
                 logical_device,
                 debug_utils,
                 messenger,
+                surface_ext,
                 surface,
             );
             error_code
@@ -236,7 +245,11 @@ unsafe fn validate_required_layers(required_layers: &[*const i8], entry: &Entry)
 
 ////////////////////////// Physical Device //////////////////////////////////
 
-fn get_physical_device(instance: &Instance) -> Result<(vk::PhysicalDevice, QueueFamilyIndices)> {
+fn get_physical_device(
+    instance: &Instance,
+    surface_ext: &Surface,
+    surface: SurfaceKHR,
+) -> Result<(vk::PhysicalDevice, QueueFamilyIndices)> {
     {
         // # Safety
         // This is safe because the only way to get an instance is via the Ash API and we would've
@@ -244,7 +257,8 @@ fn get_physical_device(instance: &Instance) -> Result<(vk::PhysicalDevice, Queue
         // it's marked unsafe but we're confident we're calling it correctly.
         let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
         for physical_device in physical_devices {
-            if let Some(queue_family_indices) = get_queue_family_indices(physical_device, instance)
+            if let Some(queue_family_indices) =
+                get_queue_family_indices(physical_device, instance, surface_ext, surface)
             {
                 return Ok((physical_device, queue_family_indices));
             }
@@ -257,17 +271,36 @@ fn get_physical_device(instance: &Instance) -> Result<(vk::PhysicalDevice, Queue
 fn get_queue_family_indices(
     device: vk::PhysicalDevice,
     instance: &Instance,
+    surface_ext: &Surface,
+    surface: SurfaceKHR,
 ) -> Option<QueueFamilyIndices> {
-    // # Safety
-    // This is marked as unsafe because it's an FFI function, but the fact we have an Instance
+    // Safety: This is marked as unsafe because it's an FFI function, but the fact we have an Instance
     // indicates that we're calling it correctly.
     let queue_family_properties =
         unsafe { instance.get_physical_device_queue_family_properties(device) };
+    let mut queue_family_indices = QueueFamilyIndices {
+        graphics_family: None,
+        presentation_family: None,
+    };
     for (idx, props) in queue_family_properties.into_iter().enumerate() {
+        // if queue family supports graphics then go ahead and record the graphics family.
         if props.queue_count > 0 && props.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-            return Some(QueueFamilyIndices {
-                graphics_family: idx as u32,
-            });
+            queue_family_indices.graphics_family = Some(idx as u32);
+        }
+
+        // Safety: This is marked as unsafe because it's an FFI function, but we have ensured that there's
+        // a valid device and the queue family passed is one of the queue family indices for this device.
+        if let Ok(surface_supported) =
+            unsafe { surface_ext.get_physical_device_surface_support(device, idx as u32, surface) }
+        {
+            if surface_supported {
+                queue_family_indices.presentation_family = Some(idx as u32);
+            }
+        }
+
+        // if both queue families on this device are found, we can use this device.
+        if queue_family_indices.is_complete() {
+            return Some(queue_family_indices);
         }
     }
     None
@@ -289,7 +322,7 @@ fn create_logical_device(
                 physical_device,
                 &vk::DeviceCreateInfo::builder().queue_create_infos(&[
                     *vk::DeviceQueueCreateInfo::builder()
-                        .queue_family_index(queue_family_indices.graphics_family)
+                        .queue_family_index(queue_family_indices.graphics_family.unwrap())
                         .queue_priorities(&[1.0]),
                 ]),
                 None,
@@ -300,7 +333,7 @@ fn create_logical_device(
         // This is safe to call due to the same assumptions as above.
         let queues = QueueHandles {
             _graphics_queue: unsafe {
-                device.get_device_queue(queue_family_indices.graphics_family, 0)
+                device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0)
             },
         };
 
@@ -327,14 +360,13 @@ unsafe fn create_surface(
 ////////////////////////// Clean Up //////////////////////////////////
 
 fn cleanup(
-    entry: Entry,
     instance: Instance,
     device: Device,
     debug_utils: DebugUtils,
     messenger: DebugUtilsMessengerEXT,
+    surface_ext: Surface,
     surface: SurfaceKHR,
 ) {
-    let surface_ext = Surface::new(&entry, &instance);
     unsafe {
         device.destroy_device(None);
         debug_utils.destroy_debug_utils_messenger(messenger, None);
