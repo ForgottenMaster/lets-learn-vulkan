@@ -44,6 +44,9 @@ fn main() -> Result<()> {
         let (event_loop, window) = create_event_loop_and_window()?;
         let entry = Entry::linked();
         let instance = create_vulkan_instance(&entry, window.raw_display_handle())?;
+        let device_extensions =
+            [unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_KHR_swapchain\0") }];
+
         // Safety: We must ensure that from the moment of surface creation to the surface being
         // destroyed, that the instance isn't destroyed. The cleanup function is safe and destroys
         // in the correct order, so unsafe block ends there.
@@ -53,9 +56,13 @@ fn main() -> Result<()> {
             let messenger = create_debug_utils_messenger(&debug_utils)?;
             let surface_ext = Surface::new(&entry, &instance);
             let (physical_device, queue_family_indices) =
-                get_physical_device(&instance, &surface_ext, surface)?;
-            let (logical_device, _queues) =
-                create_logical_device(&instance, physical_device, &queue_family_indices)?;
+                get_physical_device(&instance, &surface_ext, surface, &device_extensions)?;
+            let (logical_device, _queues) = create_logical_device(
+                &instance,
+                physical_device,
+                &queue_family_indices,
+                &device_extensions,
+            )?;
             let error_code = run_event_loop(event_loop, window);
             cleanup(
                 instance,
@@ -250,6 +257,7 @@ fn get_physical_device(
     instance: &Instance,
     surface_ext: &Surface,
     surface: SurfaceKHR,
+    required_extensions: &[&CStr],
 ) -> Result<(vk::PhysicalDevice, QueueFamilyIndices)> {
     {
         // # Safety
@@ -261,7 +269,15 @@ fn get_physical_device(
             if let Some(queue_family_indices) =
                 get_queue_family_indices(physical_device, instance, surface_ext, surface)
             {
-                return Ok((physical_device, queue_family_indices));
+                if let Ok(has_required_extensions) = validate_required_device_extensions(
+                    instance,
+                    physical_device,
+                    required_extensions,
+                ) {
+                    if has_required_extensions {
+                        return Ok((physical_device, queue_family_indices));
+                    }
+                }
             }
         }
         Err(anyhow::anyhow!("Could not find a valid PhysicalDevice."))
@@ -313,6 +329,7 @@ fn create_logical_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     queue_family_indices: &QueueFamilyIndices,
+    required_extensions: &[&CStr],
 ) -> Result<(Device, QueueHandles)> {
     {
         // get the indices we'll actually process, remove duplicates - means same family has multiple roles.
@@ -334,9 +351,15 @@ fn create_logical_device(
         // This function call is marked as unsafe because it's an FFI function, however we guarantee we
         // are calling it correctly, and are trusting that it does the correct thing.
         let device = unsafe {
+            let required_extensions = required_extensions
+                .iter()
+                .map(|cstr| cstr.as_ptr())
+                .collect::<Vec<_>>();
             instance.create_device(
                 physical_device,
-                &vk::DeviceCreateInfo::builder().queue_create_infos(&infos),
+                &vk::DeviceCreateInfo::builder()
+                    .queue_create_infos(&infos)
+                    .enabled_extension_names(&required_extensions),
                 None,
             )
         }?;
@@ -355,6 +378,30 @@ fn create_logical_device(
         Ok::<_, Error>((device, queues))
     }
     .context("Error in create_logical_device.")
+}
+
+fn validate_required_device_extensions(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    required_extensions: &[&CStr],
+) -> Result<bool> {
+    {
+        unsafe {
+            let device_extension_properties =
+                instance.enumerate_device_extension_properties(physical_device)?;
+            let available_extensions = device_extension_properties
+                .iter()
+                .map(|prop| CStr::from_ptr(prop.extension_name.as_ptr()))
+                .collect::<HashSet<_>>();
+            for required_extension in required_extensions {
+                if !available_extensions.contains(required_extension) {
+                    return Ok::<_, Error>(false);
+                }
+            }
+        }
+        Ok::<_, Error>(true)
+    }
+    .context("Error in validate_required_device_extensions.")
 }
 
 ////////////////////////// Surface ///////////////////////////////////
