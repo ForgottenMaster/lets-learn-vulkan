@@ -6,7 +6,8 @@ use {
         vk::{
             DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
             DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT, SurfaceKHR,
+            DebugUtilsMessengerEXT, PresentModeKHR, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
+            SurfaceKHR,
         },
         Device, Entry, Instance,
     },
@@ -39,6 +40,18 @@ struct QueueHandles {
     _presentation_queue: vk::Queue,
 }
 
+struct SurfaceInfo {
+    present_modes: Vec<PresentModeKHR>,
+    surface_formats: Vec<SurfaceFormatKHR>,
+    _surface_capabilities: SurfaceCapabilitiesKHR,
+}
+
+impl SurfaceInfo {
+    fn is_valid(&self) -> bool {
+        !self.present_modes.is_empty() && !self.surface_formats.is_empty()
+    }
+}
+
 fn main() -> Result<()> {
     {
         let (event_loop, window) = create_event_loop_and_window()?;
@@ -55,7 +68,7 @@ fn main() -> Result<()> {
             let debug_utils = DebugUtils::new(&entry, &instance);
             let messenger = create_debug_utils_messenger(&debug_utils)?;
             let surface_ext = Surface::new(&entry, &instance);
-            let (physical_device, queue_family_indices) =
+            let (physical_device, queue_family_indices, _surface_info) =
                 get_physical_device(&instance, &surface_ext, surface, &device_extensions)?;
             let (logical_device, _queues) = create_logical_device(
                 &instance,
@@ -258,7 +271,7 @@ fn get_physical_device(
     surface_ext: &Surface,
     surface: SurfaceKHR,
     required_extensions: &[&CStr],
-) -> Result<(vk::PhysicalDevice, QueueFamilyIndices)> {
+) -> Result<(vk::PhysicalDevice, QueueFamilyIndices, SurfaceInfo)> {
     {
         // # Safety
         // This is safe because the only way to get an instance is via the Ash API and we would've
@@ -269,13 +282,15 @@ fn get_physical_device(
             if let Some(queue_family_indices) =
                 get_queue_family_indices(physical_device, instance, surface_ext, surface)
             {
-                if let Ok(has_required_extensions) = validate_required_device_extensions(
+                let has_required_extensions = validate_required_device_extensions(
                     instance,
                     physical_device,
                     required_extensions,
-                ) {
-                    if has_required_extensions {
-                        return Ok((physical_device, queue_family_indices));
+                )?;
+                if has_required_extensions {
+                    let surface_info = get_surface_info(surface_ext, physical_device, surface)?;
+                    if surface_info.is_valid() {
+                        return Ok((physical_device, queue_family_indices, surface_info));
                     }
                 }
             }
@@ -417,6 +432,29 @@ unsafe fn create_surface(
     let window_handle = window.raw_window_handle();
     ash_window::create_surface(entry, instance, display_handle, window_handle, None)
         .context("Error while creating a surface to use.")
+}
+
+fn get_surface_info(
+    surface_ext: &Surface,
+    physical_device: vk::PhysicalDevice,
+    surface: SurfaceKHR,
+) -> Result<SurfaceInfo> {
+    {
+        let present_modes = unsafe {
+            surface_ext.get_physical_device_surface_present_modes(physical_device, surface)
+        }?;
+        let surface_capabilities = unsafe {
+            surface_ext.get_physical_device_surface_capabilities(physical_device, surface)
+        }?;
+        let surface_formats =
+            unsafe { surface_ext.get_physical_device_surface_formats(physical_device, surface) }?;
+        Ok::<_, Error>(SurfaceInfo {
+            present_modes,
+            _surface_capabilities: surface_capabilities,
+            surface_formats,
+        })
+    }
+    .context("Error when trying to get surface information for a physical device.")
 }
 
 ////////////////////////// Clean Up //////////////////////////////////
