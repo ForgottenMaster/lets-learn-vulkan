@@ -1,18 +1,18 @@
 use {
     anyhow::{Context, Error, Result},
     ash::{
-        extensions::ext::DebugUtils,
+        extensions::{ext::DebugUtils, khr::Surface},
         vk,
         vk::{
             DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
             DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT,
+            DebugUtilsMessengerEXT, SurfaceKHR,
         },
         Device, Entry, Instance,
     },
     ash_window::enumerate_required_extensions,
     core::ffi::c_void,
-    raw_window_handle::{HasRawDisplayHandle, RawDisplayHandle},
+    raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle},
     std::{collections::HashSet, ffi::CStr},
     winit::{
         dpi::{PhysicalSize, Size},
@@ -36,13 +36,27 @@ fn main() -> Result<()> {
         let (event_loop, window) = create_event_loop_and_window()?;
         let entry = Entry::linked();
         let instance = create_vulkan_instance(&entry, window.raw_display_handle())?;
-        let debug_utils = DebugUtils::new(&entry, &instance);
-        let messenger = create_debug_utils_messenger(&debug_utils)?;
-        let (physical_device, queue_family_indices) = get_physical_device(&instance)?;
-        let (logical_device, _queues) =
-            create_logical_device(&instance, physical_device, &queue_family_indices)?;
-        let error_code = run_event_loop(event_loop, window);
-        cleanup(instance, logical_device, debug_utils, messenger);
+        // Safety: We must ensure that from the moment of surface creation to the surface being
+        // destroyed, that the instance isn't destroyed. The cleanup function is safe and destroys
+        // in the correct order, so unsafe block ends there.
+        let error_code = unsafe {
+            let surface = create_surface(&entry, &instance, &window)?;
+            let debug_utils = DebugUtils::new(&entry, &instance);
+            let messenger = create_debug_utils_messenger(&debug_utils)?;
+            let (physical_device, queue_family_indices) = get_physical_device(&instance)?;
+            let (logical_device, _queues) =
+                create_logical_device(&instance, physical_device, &queue_family_indices)?;
+            let error_code = run_event_loop(event_loop, window);
+            cleanup(
+                entry,
+                instance,
+                logical_device,
+                debug_utils,
+                messenger,
+                surface,
+            );
+            error_code
+        };
         if error_code == 0 {
             Ok(())
         } else {
@@ -295,17 +309,36 @@ fn create_logical_device(
     .context("Error in create_logical_device.")
 }
 
+////////////////////////// Surface ///////////////////////////////////
+/// # Safety
+/// This function is unsafe because we can't guarantee that the resulting surface doesn't outlive Instance
+/// which is a precondition violation - surface should be destroyed before the instance that created it.
+unsafe fn create_surface(
+    entry: &Entry,
+    instance: &Instance,
+    window: &Window,
+) -> Result<SurfaceKHR> {
+    let display_handle = window.raw_display_handle();
+    let window_handle = window.raw_window_handle();
+    ash_window::create_surface(entry, instance, display_handle, window_handle, None)
+        .context("Error while creating a surface to use.")
+}
+
 ////////////////////////// Clean Up //////////////////////////////////
 
 fn cleanup(
+    entry: Entry,
     instance: Instance,
     device: Device,
     debug_utils: DebugUtils,
     messenger: DebugUtilsMessengerEXT,
+    surface: SurfaceKHR,
 ) {
+    let surface_ext = Surface::new(&entry, &instance);
     unsafe {
         device.destroy_device(None);
         debug_utils.destroy_debug_utils_messenger(messenger, None);
+        surface_ext.destroy_surface(surface, None);
         instance.destroy_instance(None);
     }
 }
