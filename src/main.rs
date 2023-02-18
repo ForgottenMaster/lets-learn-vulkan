@@ -1,7 +1,17 @@
 use {
     anyhow::{Context, Error, Result},
-    ash::{vk, Device, Entry, Instance},
+    ash::{
+        extensions::ext::DebugUtils,
+        vk,
+        vk::{
+            DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+            DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
+            DebugUtilsMessengerEXT,
+        },
+        Device, Entry, Instance,
+    },
     ash_window::enumerate_required_extensions,
+    core::ffi::c_void,
     raw_window_handle::{HasRawDisplayHandle, RawDisplayHandle},
     std::{collections::HashSet, ffi::CStr},
     winit::{
@@ -26,11 +36,13 @@ fn main() -> Result<()> {
         let (event_loop, window) = create_event_loop_and_window()?;
         let entry = Entry::linked();
         let instance = create_vulkan_instance(&entry, window.raw_display_handle())?;
+        let debug_utils = DebugUtils::new(&entry, &instance);
+        let messenger = create_debug_utils_messenger(&debug_utils)?;
         let (physical_device, queue_family_indices) = get_physical_device(&instance)?;
         let (logical_device, _queues) =
             create_logical_device(&instance, physical_device, &queue_family_indices)?;
         let error_code = run_event_loop(event_loop, window);
-        cleanup(instance, logical_device);
+        cleanup(instance, logical_device, debug_utils, messenger);
         if error_code == 0 {
             Ok(())
         } else {
@@ -40,6 +52,31 @@ fn main() -> Result<()> {
         }
     }
     .context("Error in main.")
+}
+
+////////////////////////// Debugging //////////////////////////////////
+fn create_debug_utils_messenger(debug_utils: &DebugUtils) -> Result<DebugUtilsMessengerEXT> {
+    unsafe {
+        debug_utils.create_debug_utils_messenger(
+            &DebugUtilsMessengerCreateInfoEXT::builder()
+                .pfn_user_callback(Some(debug_callback))
+                .message_severity(DebugUtilsMessageSeverityFlagsEXT::ERROR)
+                .message_type(DebugUtilsMessageTypeFlagsEXT::VALIDATION),
+            None,
+        )
+    }
+    .context("Error while creating a debug utils messenger")
+}
+
+unsafe extern "system" fn debug_callback(
+    _severity_flags: DebugUtilsMessageSeverityFlagsEXT,
+    _type_flags: DebugUtilsMessageTypeFlagsEXT,
+    callback_data: *const DebugUtilsMessengerCallbackDataEXT,
+    _user_data: *mut c_void,
+) -> u32 {
+    let message = CStr::from_ptr((*callback_data).p_message);
+    println!("{message:?}");
+    0
 }
 
 ////////////////////////// Windowing //////////////////////////////////
@@ -90,17 +127,26 @@ fn create_vulkan_instance(entry: &Entry, raw_display_handle: RawDisplayHandle) -
             .application_name(application_name)
             .application_version(vk::make_api_version(1, 1, 0, 0))
             .api_version(vk::API_VERSION_1_3);
-        let required_extensions = enumerate_required_extensions(raw_display_handle)?;
+        let mut required_extensions = enumerate_required_extensions(raw_display_handle)?.to_vec();
+        required_extensions
+            .extend([
+                unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_EXT_debug_utils\0") }.as_ptr(),
+            ]);
+        let required_layers = [unsafe {
+            CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0").as_ptr()
+        }];
         // # Safety
         // This call is safe because required_extensions comes from enumerate_required_extensions
         // in the ash-window crate. We assume that this crate behaves correctly and that it returns valid
         // null-terminated UTF-8 strings.
         unsafe {
-            validate_required_extensions(required_extensions, entry)?;
+            validate_required_extensions(&required_extensions, entry)?;
+            validate_required_layers(&required_layers, entry)?;
         }
         let instance_create_info = vk::InstanceCreateInfo::builder()
             .application_info(&application_info)
-            .enabled_extension_names(required_extensions);
+            .enabled_extension_names(&required_extensions)
+            .enabled_layer_names(&required_layers);
 
         // # Safety
         // This is safe because although it's an FFI function, it's from a trusted source, and we've
@@ -142,6 +188,36 @@ unsafe fn validate_required_extensions(
         Ok::<_, Error>(())
     }
     .context("Error in validate_required_extensions.")
+}
+
+/// # Safety
+/// This function doesn't validate that the *const i8 pointers
+/// inside the required_layers slice are all valid null-terminated
+/// UTF-8 strings. Caller must ensure that these are correctly formatted
+/// or retrieved from a verified source such as the Vulkan API itself.
+unsafe fn validate_required_layers(required_layers: &[*const i8], entry: &Entry) -> Result<()> {
+    {
+        let instance_layer_properties = entry.enumerate_instance_layer_properties()?;
+        let required_layers = required_layers
+            .iter()
+            .copied()
+            .map(|ptr| CStr::from_ptr(ptr))
+            .collect::<Vec<_>>();
+        let available_layers = instance_layer_properties
+            .iter()
+            .map(|prop| CStr::from_ptr(prop.layer_name.as_ptr()))
+            .collect::<HashSet<_>>();
+        for required_layer in required_layers {
+            if !available_layers.contains(required_layer) {
+                return Err(anyhow::anyhow!(format!(
+                    "Required layer {} is not available",
+                    required_layer.to_str()?
+                )));
+            }
+        }
+        Ok::<_, Error>(())
+    }
+    .context("Error in validate_required_layers.")
 }
 
 ////////////////////////// Physical Device //////////////////////////////////
@@ -221,9 +297,15 @@ fn create_logical_device(
 
 ////////////////////////// Clean Up //////////////////////////////////
 
-fn cleanup(instance: Instance, device: Device) {
+fn cleanup(
+    instance: Instance,
+    device: Device,
+    debug_utils: DebugUtils,
+    messenger: DebugUtilsMessengerEXT,
+) {
     unsafe {
         device.destroy_device(None);
+        debug_utils.destroy_debug_utils_messenger(messenger, None);
         instance.destroy_instance(None);
     }
 }
