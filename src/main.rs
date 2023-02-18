@@ -36,6 +36,7 @@ impl QueueFamilyIndices {
 
 struct QueueHandles {
     _graphics_queue: vk::Queue,
+    _presentation_queue: vk::Queue,
 }
 
 fn main() -> Result<()> {
@@ -314,17 +315,28 @@ fn create_logical_device(
     queue_family_indices: &QueueFamilyIndices,
 ) -> Result<(Device, QueueHandles)> {
     {
+        // get the indices we'll actually process, remove duplicates - means same family has multiple roles.
+        let mut indices = vec![
+            queue_family_indices.graphics_family.unwrap(),
+            queue_family_indices.presentation_family.unwrap(),
+        ];
+        indices.dedup();
+        let infos = indices
+            .into_iter()
+            .map(|idx| {
+                *vk::DeviceQueueCreateInfo::builder()
+                    .queue_family_index(idx)
+                    .queue_priorities(&[1.0])
+            })
+            .collect::<Vec<_>>();
+
         // # Safety
         // This function call is marked as unsafe because it's an FFI function, however we guarantee we
         // are calling it correctly, and are trusting that it does the correct thing.
         let device = unsafe {
             instance.create_device(
                 physical_device,
-                &vk::DeviceCreateInfo::builder().queue_create_infos(&[
-                    *vk::DeviceQueueCreateInfo::builder()
-                        .queue_family_index(queue_family_indices.graphics_family.unwrap())
-                        .queue_priorities(&[1.0]),
-                ]),
+                &vk::DeviceCreateInfo::builder().queue_create_infos(&infos),
                 None,
             )
         }?;
@@ -334,6 +346,9 @@ fn create_logical_device(
         let queues = QueueHandles {
             _graphics_queue: unsafe {
                 device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0)
+            },
+            _presentation_queue: unsafe {
+                device.get_device_queue(queue_family_indices.presentation_family.unwrap(), 0)
             },
         };
 
