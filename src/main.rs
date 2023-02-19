@@ -4,17 +4,17 @@ use {
         extensions::{ext::DebugUtils, khr::Surface},
         vk,
         vk::{
-            DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+            ColorSpaceKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
             DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT, PresentModeKHR, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
-            SurfaceKHR,
+            DebugUtilsMessengerEXT, Extent2D, Format, PresentModeKHR, SurfaceCapabilitiesKHR,
+            SurfaceFormatKHR, SurfaceKHR,
         },
         Device, Entry, Instance,
     },
     ash_window::enumerate_required_extensions,
     core::ffi::c_void,
     raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle},
-    std::{collections::HashSet, ffi::CStr},
+    std::{cmp, collections::HashSet, ffi::CStr},
     winit::{
         dpi::{PhysicalSize, Size},
         event::{Event, WindowEvent},
@@ -43,12 +43,75 @@ struct QueueHandles {
 struct SurfaceInfo {
     present_modes: Vec<PresentModeKHR>,
     surface_formats: Vec<SurfaceFormatKHR>,
-    _surface_capabilities: SurfaceCapabilitiesKHR,
+    surface_capabilities: SurfaceCapabilitiesKHR,
 }
 
 impl SurfaceInfo {
     fn is_valid(&self) -> bool {
         !self.present_modes.is_empty() && !self.surface_formats.is_empty()
+    }
+
+    #[allow(unused)]
+    fn choose_best_color_format(&self) -> SurfaceFormatKHR {
+        const DESIRED_FORMAT: Format = Format::R8G8B8A8_UNORM;
+        const DESIRED_FORMAT_ALT: Format = Format::B8G8R8A8_UNORM;
+        const DESIRED_COLOR_SPACE: ColorSpaceKHR = ColorSpaceKHR::SRGB_NONLINEAR;
+
+        // If the number of formats is 1, and that format's format is undefined, this is
+        // a special case that Vulkan uses to indicate that **all** formats are supported.
+        if self.surface_formats.len() == 1 && self.surface_formats[0].format == Format::UNDEFINED {
+            SurfaceFormatKHR::builder()
+                .format(DESIRED_FORMAT)
+                .color_space(DESIRED_COLOR_SPACE)
+                .build()
+        } else {
+            for format in &self.surface_formats {
+                // Early return if we find a format with the desired color space and on of the
+                // desired formats.
+                if (format.format == DESIRED_FORMAT || format.format == DESIRED_FORMAT_ALT)
+                    && format.color_space == DESIRED_COLOR_SPACE
+                {
+                    return *format;
+                }
+            }
+
+            // No desired format found, just take the first supported format.
+            self.surface_formats[0]
+        }
+    }
+
+    #[allow(unused)]
+    fn choose_best_present_mode(&self) -> PresentModeKHR {
+        // If the desired mode is available we use that, else Vulkan
+        // guarantees that FIFO is supported so fall back to that.
+        const DESIRED_MODE: PresentModeKHR = PresentModeKHR::MAILBOX;
+        if self.present_modes.contains(&DESIRED_MODE) {
+            DESIRED_MODE
+        } else {
+            PresentModeKHR::FIFO
+        }
+    }
+
+    #[allow(unused)]
+    fn choose_swapchain_extents(&self, window: &Window) -> Extent2D {
+        let current_extent = self.surface_capabilities.current_extent;
+        if current_extent.width != u32::MAX {
+            current_extent
+        } else {
+            let window_size = window.inner_size();
+            let (width, height) = (window_size.width, window_size.height);
+            let (min_width, min_height) = (
+                self.surface_capabilities.min_image_extent.width,
+                self.surface_capabilities.min_image_extent.height,
+            );
+            let (max_width, max_height) = (
+                self.surface_capabilities.max_image_extent.width,
+                self.surface_capabilities.max_image_extent.height,
+            );
+            let width = cmp::min(cmp::max(width, min_width), max_width);
+            let height = cmp::min(cmp::max(height, min_height), max_height);
+            Extent2D { width, height }
+        }
     }
 }
 
@@ -68,7 +131,8 @@ fn main() -> Result<()> {
             let debug_utils = DebugUtils::new(&entry, &instance);
             let messenger = create_debug_utils_messenger(&debug_utils)?;
             let surface_ext = Surface::new(&entry, &instance);
-            let (physical_device, queue_family_indices, _surface_info) =
+            #[allow(unused)]
+            let (physical_device, queue_family_indices, surface_info) =
                 get_physical_device(&instance, &surface_ext, surface, &device_extensions)?;
             let (logical_device, _queues) = create_logical_device(
                 &instance,
@@ -450,7 +514,7 @@ fn get_surface_info(
             unsafe { surface_ext.get_physical_device_surface_formats(physical_device, surface) }?;
         Ok::<_, Error>(SurfaceInfo {
             present_modes,
-            _surface_capabilities: surface_capabilities,
+            surface_capabilities,
             surface_formats,
         })
     }
