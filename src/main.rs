@@ -60,10 +60,10 @@ impl SurfaceInfo {
         // If the number of formats is 1, and that format's format is undefined, this is
         // a special case that Vulkan uses to indicate that **all** formats are supported.
         if self.surface_formats.len() == 1 && self.surface_formats[0].format == Format::UNDEFINED {
-            SurfaceFormatKHR::builder()
-                .format(DESIRED_FORMAT)
-                .color_space(DESIRED_COLOR_SPACE)
-                .build()
+            SurfaceFormatKHR {
+                format: DESIRED_FORMAT,
+                color_space: DESIRED_COLOR_SPACE,
+            }
         } else {
             for format in &self.surface_formats {
                 // Early return if we find a format with the desired color space and on of the
