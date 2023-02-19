@@ -1,13 +1,17 @@
 use {
     anyhow::{Context, Error, Result},
     ash::{
-        extensions::{ext::DebugUtils, khr::Surface},
+        extensions::{
+            ext::DebugUtils,
+            khr::{Surface, Swapchain},
+        },
         vk,
         vk::{
-            ColorSpaceKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-            DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT, Extent2D, Format, PresentModeKHR, SurfaceCapabilitiesKHR,
-            SurfaceFormatKHR, SurfaceKHR,
+            ColorSpaceKHR, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT,
+            DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT,
+            DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, Extent2D, Format,
+            ImageUsageFlags, PresentModeKHR, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
+            SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
         },
         Device, Entry, Instance,
     },
@@ -123,34 +127,42 @@ fn main() -> Result<()> {
         let device_extensions =
             [unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_KHR_swapchain\0") }];
 
-        // Safety: We must ensure that from the moment of surface creation to the surface being
-        // destroyed, that the instance isn't destroyed. The cleanup function is safe and destroys
-        // in the correct order, so unsafe block ends there.
-        let error_code = unsafe {
-            let surface = create_surface(&entry, &instance, &window)?;
-            let debug_utils = DebugUtils::new(&entry, &instance);
-            let messenger = create_debug_utils_messenger(&debug_utils)?;
-            let surface_ext = Surface::new(&entry, &instance);
-            #[allow(unused)]
-            let (physical_device, queue_family_indices, surface_info) =
-                get_physical_device(&instance, &surface_ext, surface, &device_extensions)?;
-            let (logical_device, _queues) = create_logical_device(
-                &instance,
-                physical_device,
-                &queue_family_indices,
-                &device_extensions,
-            )?;
-            let error_code = run_event_loop(event_loop, window);
-            cleanup(
-                instance,
-                logical_device,
-                debug_utils,
-                messenger,
-                surface_ext,
-                surface,
-            );
-            error_code
-        };
+        let surface = create_surface(&entry, &instance, &window)?;
+        let debug_utils = DebugUtils::new(&entry, &instance);
+        let messenger = create_debug_utils_messenger(&debug_utils)?;
+        let surface_ext = Surface::new(&entry, &instance);
+        #[allow(unused)]
+        let (physical_device, queue_family_indices, surface_info) =
+            get_physical_device(&instance, &surface_ext, surface, &device_extensions)?;
+
+        let (logical_device, _queues) = create_logical_device(
+            &instance,
+            physical_device,
+            &queue_family_indices,
+            &device_extensions,
+        )?;
+
+        // create the swapchain
+        let swapchain_ext = Swapchain::new(&instance, &logical_device);
+        let swapchain = create_swapchain(
+            &swapchain_ext,
+            surface,
+            &surface_info,
+            &queue_family_indices,
+            &window,
+        )?;
+
+        let error_code = run_event_loop(event_loop, window);
+        cleanup(
+            instance,
+            logical_device,
+            debug_utils,
+            messenger,
+            surface_ext,
+            surface,
+            swapchain_ext,
+            swapchain,
+        );
         if error_code == 0 {
             Ok(())
         } else {
@@ -160,6 +172,50 @@ fn main() -> Result<()> {
         }
     }
     .context("Error in main.")
+}
+
+////////////////////////// Swapchain //////////////////////////////////
+fn create_swapchain(
+    swapchain_ext: &Swapchain,
+    surface: SurfaceKHR,
+    surface_info: &SurfaceInfo,
+    queue_family_indices: &QueueFamilyIndices,
+    window: &Window,
+) -> Result<SwapchainKHR> {
+    unsafe {
+        let min_image_count = cmp::min(
+            surface_info.surface_capabilities.max_image_count,
+            surface_info.surface_capabilities.min_image_count + 1,
+        );
+        let best_format = surface_info.choose_best_color_format();
+        let queue_family_indices = [
+            queue_family_indices.graphics_family.unwrap(),
+            queue_family_indices.presentation_family.unwrap(),
+        ];
+        let is_concurrent = queue_family_indices[0] != queue_family_indices[1];
+        let create_info = SwapchainCreateInfoKHR::builder()
+            .surface(surface)
+            .min_image_count(min_image_count)
+            .image_format(best_format.format)
+            .image_color_space(best_format.color_space)
+            .image_extent(surface_info.choose_swapchain_extents(window))
+            .image_array_layers(1)
+            .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
+            .pre_transform(surface_info.surface_capabilities.current_transform)
+            .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(surface_info.choose_best_present_mode())
+            .clipped(true);
+        let create_info = if is_concurrent {
+            create_info
+                .image_sharing_mode(SharingMode::CONCURRENT)
+                .queue_family_indices(&queue_family_indices)
+        } else {
+            create_info.image_sharing_mode(SharingMode::EXCLUSIVE)
+        };
+        swapchain_ext
+            .create_swapchain(&create_info, None)
+            .context("Error while creating a swapchain.")
+    }
 }
 
 ////////////////////////// Debugging //////////////////////////////////
@@ -484,18 +540,13 @@ fn validate_required_device_extensions(
 }
 
 ////////////////////////// Surface ///////////////////////////////////
-/// # Safety
-/// This function is unsafe because we can't guarantee that the resulting surface doesn't outlive Instance
-/// which is a precondition violation - surface should be destroyed before the instance that created it.
-unsafe fn create_surface(
-    entry: &Entry,
-    instance: &Instance,
-    window: &Window,
-) -> Result<SurfaceKHR> {
-    let display_handle = window.raw_display_handle();
-    let window_handle = window.raw_window_handle();
-    ash_window::create_surface(entry, instance, display_handle, window_handle, None)
-        .context("Error while creating a surface to use.")
+fn create_surface(entry: &Entry, instance: &Instance, window: &Window) -> Result<SurfaceKHR> {
+    unsafe {
+        let display_handle = window.raw_display_handle();
+        let window_handle = window.raw_window_handle();
+        ash_window::create_surface(entry, instance, display_handle, window_handle, None)
+            .context("Error while creating a surface to use.")
+    }
 }
 
 fn get_surface_info(
@@ -530,8 +581,11 @@ fn cleanup(
     messenger: DebugUtilsMessengerEXT,
     surface_ext: Surface,
     surface: SurfaceKHR,
+    swapchain_ext: Swapchain,
+    swapchain: SwapchainKHR,
 ) {
     unsafe {
+        swapchain_ext.destroy_swapchain(swapchain, None);
         device.destroy_device(None);
         debug_utils.destroy_debug_utils_messenger(messenger, None);
         surface_ext.destroy_surface(surface, None);
