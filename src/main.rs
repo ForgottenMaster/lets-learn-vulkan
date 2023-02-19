@@ -7,11 +7,13 @@ use {
         },
         vk,
         vk::{
-            ColorSpaceKHR, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT,
-            DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT,
-            DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, Extent2D, Format,
-            ImageUsageFlags, PresentModeKHR, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
-            SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
+            ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
+            DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+            DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
+            DebugUtilsMessengerEXT, Extent2D, Format, Image, ImageAspectFlags,
+            ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+            PresentModeKHR, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR,
+            SwapchainCreateInfoKHR, SwapchainKHR,
         },
         Device, Entry, Instance,
     },
@@ -55,7 +57,6 @@ impl SurfaceInfo {
         !self.present_modes.is_empty() && !self.surface_formats.is_empty()
     }
 
-    #[allow(unused)]
     fn choose_best_color_format(&self) -> SurfaceFormatKHR {
         const DESIRED_FORMAT: Format = Format::R8G8B8A8_UNORM;
         const DESIRED_FORMAT_ALT: Format = Format::B8G8R8A8_UNORM;
@@ -84,7 +85,6 @@ impl SurfaceInfo {
         }
     }
 
-    #[allow(unused)]
     fn choose_best_present_mode(&self) -> PresentModeKHR {
         // If the desired mode is available we use that, else Vulkan
         // guarantees that FIFO is supported so fall back to that.
@@ -96,7 +96,6 @@ impl SurfaceInfo {
         }
     }
 
-    #[allow(unused)]
     fn choose_swapchain_extents(&self, window: &Window) -> Extent2D {
         let current_extent = self.surface_capabilities.current_extent;
         if current_extent.width != u32::MAX {
@@ -131,7 +130,6 @@ fn main() -> Result<()> {
         let debug_utils = DebugUtils::new(&entry, &instance);
         let messenger = create_debug_utils_messenger(&debug_utils)?;
         let surface_ext = Surface::new(&entry, &instance);
-        #[allow(unused)]
         let (physical_device, queue_family_indices, surface_info) =
             get_physical_device(&instance, &surface_ext, surface, &device_extensions)?;
 
@@ -144,13 +142,15 @@ fn main() -> Result<()> {
 
         // create the swapchain
         let swapchain_ext = Swapchain::new(&instance, &logical_device);
-        let swapchain = create_swapchain(
+        let (swapchain, format) = create_swapchain(
             &swapchain_ext,
             surface,
             &surface_info,
             &queue_family_indices,
             &window,
         )?;
+        let swapchain_images =
+            get_swapchain_images(&swapchain_ext, swapchain, format, &logical_device)?;
 
         let error_code = run_event_loop(event_loop, window);
         cleanup(
@@ -162,6 +162,7 @@ fn main() -> Result<()> {
             surface,
             swapchain_ext,
             swapchain,
+            swapchain_images,
         );
         if error_code == 0 {
             Ok(())
@@ -175,13 +176,19 @@ fn main() -> Result<()> {
 }
 
 ////////////////////////// Swapchain //////////////////////////////////
+struct SwapchainImage {
+    #[allow(unused)]
+    image: Image,
+    image_view: ImageView,
+}
+
 fn create_swapchain(
     swapchain_ext: &Swapchain,
     surface: SurfaceKHR,
     surface_info: &SurfaceInfo,
     queue_family_indices: &QueueFamilyIndices,
     window: &Window,
-) -> Result<SwapchainKHR> {
+) -> Result<(SwapchainKHR, Format)> {
     unsafe {
         let min_image_count = cmp::min(
             surface_info.surface_capabilities.max_image_count,
@@ -212,10 +219,57 @@ fn create_swapchain(
         } else {
             create_info.image_sharing_mode(SharingMode::EXCLUSIVE)
         };
-        swapchain_ext
+        let swapchain = swapchain_ext
             .create_swapchain(&create_info, None)
-            .context("Error while creating a swapchain.")
+            .context("Error while creating a swapchain.")?;
+        Ok((swapchain, best_format.format))
     }
+}
+
+fn get_swapchain_images(
+    swapchain_ext: &Swapchain,
+    swapchain: SwapchainKHR,
+    format: Format,
+    device: &Device,
+) -> Result<Vec<SwapchainImage>> {
+    unsafe {
+        let swapchain_images = swapchain_ext.get_swapchain_images(swapchain)?;
+        let mut swapchain_images_output = Vec::with_capacity(swapchain_images.len());
+        for image in swapchain_images {
+            let image_view = create_image_view(image, format, ImageAspectFlags::COLOR, device)?;
+            swapchain_images_output.push(SwapchainImage { image, image_view })
+        }
+        Ok::<_, Error>(swapchain_images_output)
+    }
+    .context("Error while trying to get swapchain images and make image views.")
+}
+
+////////////////////////// Image Views ////////////////////////////////
+fn create_image_view(
+    image: Image,
+    format: Format,
+    aspect_flags: ImageAspectFlags,
+    device: &Device,
+) -> Result<ImageView> {
+    let component_mapping_builder = ComponentMapping::builder()
+        .r(ComponentSwizzle::IDENTITY)
+        .g(ComponentSwizzle::IDENTITY)
+        .b(ComponentSwizzle::IDENTITY)
+        .a(ComponentSwizzle::IDENTITY);
+    let subresource_range_builder = ImageSubresourceRange::builder()
+        .aspect_mask(aspect_flags)
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(0)
+        .layer_count(1);
+    let builder = ImageViewCreateInfo::builder()
+        .image(image)
+        .view_type(ImageViewType::TYPE_2D)
+        .format(format)
+        .components(*component_mapping_builder)
+        .subresource_range(*subresource_range_builder);
+    unsafe { device.create_image_view(&builder, None) }
+        .context("Error while trying to create an image view.")
 }
 
 ////////////////////////// Debugging //////////////////////////////////
@@ -573,7 +627,7 @@ fn get_surface_info(
 }
 
 ////////////////////////// Clean Up //////////////////////////////////
-
+#[allow(clippy::too_many_arguments)]
 fn cleanup(
     instance: Instance,
     device: Device,
@@ -583,8 +637,12 @@ fn cleanup(
     surface: SurfaceKHR,
     swapchain_ext: Swapchain,
     swapchain: SwapchainKHR,
+    swapchain_images: Vec<SwapchainImage>,
 ) {
     unsafe {
+        for swapchain_image in swapchain_images {
+            device.destroy_image_view(swapchain_image.image_view, None);
+        }
         swapchain_ext.destroy_swapchain(swapchain, None);
         device.destroy_device(None);
         debug_utils.destroy_debug_utils_messenger(messenger, None);
