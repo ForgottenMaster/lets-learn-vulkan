@@ -12,8 +12,9 @@ use {
             DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
             DebugUtilsMessengerEXT, Extent2D, Format, Image, ImageAspectFlags,
             ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-            PresentModeKHR, SharingMode, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR,
-            SwapchainCreateInfoKHR, SwapchainKHR,
+            PresentModeKHR, ShaderModule, ShaderModuleCreateInfo, SharingMode,
+            SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR,
+            SwapchainKHR,
         },
         Device, Entry, Instance,
     },
@@ -122,7 +123,7 @@ impl SurfaceInfo {
 
 fn main() -> Result<()> {
     {
-        let _shader_map = get_compiled_shader_map();
+        let shader_mapping = get_compiled_shader_mapping();
         let (event_loop, window) = create_event_loop_and_window()?;
         let entry = Entry::linked();
         let instance = create_vulkan_instance(&entry, window.raw_display_handle())?;
@@ -155,6 +156,12 @@ fn main() -> Result<()> {
         let swapchain_images =
             get_swapchain_images(&swapchain_ext, swapchain, format, &logical_device)?;
 
+        // compile vertex and fragment shader modules from code.
+        let vertex_shader =
+            create_shader_module(&logical_device, shader_mapping[&"triangle.vert"])?;
+        let fragment_shader =
+            create_shader_module(&logical_device, shader_mapping[&"triangle.frag"])?;
+
         let error_code = run_event_loop(event_loop, window);
         cleanup(
             instance,
@@ -166,6 +173,7 @@ fn main() -> Result<()> {
             swapchain_ext,
             swapchain,
             swapchain_images,
+            &[vertex_shader, fragment_shader],
         );
         if error_code == 0 {
             Ok(())
@@ -176,6 +184,12 @@ fn main() -> Result<()> {
         }
     }
     .context("Error in main.")
+}
+
+////////////////////////// Shaders ////////////////////////////////////
+fn create_shader_module(device: &Device, code: &[u32]) -> Result<ShaderModule> {
+    unsafe { device.create_shader_module(&ShaderModuleCreateInfo::builder().code(code), None) }
+        .context("Error while creating a shader module.")
 }
 
 ////////////////////////// Swapchain //////////////////////////////////
@@ -641,8 +655,12 @@ fn cleanup(
     swapchain_ext: Swapchain,
     swapchain: SwapchainKHR,
     swapchain_images: Vec<SwapchainImage>,
+    shader_modules: &[ShaderModule],
 ) {
     unsafe {
+        for shader_module in shader_modules {
+            device.destroy_shader_module(*shader_module, None);
+        }
         for swapchain_image in swapchain_images {
             device.destroy_image_view(swapchain_image.image_view, None);
         }
