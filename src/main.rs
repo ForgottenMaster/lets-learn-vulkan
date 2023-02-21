@@ -30,6 +30,8 @@ use {
     },
 };
 
+include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
+
 struct QueueFamilyIndices {
     graphics_family: Option<u32>,
     presentation_family: Option<u32>,
@@ -120,6 +122,7 @@ impl SurfaceInfo {
 
 fn main() -> Result<()> {
     {
+        let _shader_map = get_compiled_shader_map();
         let (event_loop, window) = create_event_loop_and_window()?;
         let entry = Entry::linked();
         let instance = create_vulkan_instance(&entry, window.raw_display_handle())?;
