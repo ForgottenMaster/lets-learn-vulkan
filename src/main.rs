@@ -157,10 +157,9 @@ fn main() -> Result<()> {
             get_swapchain_images(&swapchain_ext, swapchain, format, &logical_device)?;
 
         // compile vertex and fragment shader modules from code.
-        let vertex_shader =
-            create_shader_module(&logical_device, shader_mapping[&"triangle.vert"])?;
+        let vertex_shader = create_shader_module(&logical_device, shader_mapping["triangle.vert"])?;
         let fragment_shader =
-            create_shader_module(&logical_device, shader_mapping[&"triangle.frag"])?;
+            create_shader_module(&logical_device, shader_mapping["triangle.frag"])?;
 
         let error_code = run_event_loop(event_loop, window);
         cleanup(
