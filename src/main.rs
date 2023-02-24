@@ -7,14 +7,23 @@ use {
         },
         vk,
         vk::{
-            ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
+            AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
+            AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags, ColorSpaceKHR,
+            ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
             DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
             DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT, Extent2D, Format, Image, ImageAspectFlags,
-            ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-            PresentModeKHR, ShaderModule, ShaderModuleCreateInfo, SharingMode,
-            SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR,
-            SwapchainKHR,
+            DebugUtilsMessengerEXT, Extent2D, Format, FrontFace, GraphicsPipelineCreateInfo, Image,
+            ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
+            ImageViewCreateInfo, ImageViewType, Pipeline, PipelineBindPoint, PipelineCache,
+            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
+            PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+            PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
+            PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology,
+            Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
+            ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDependency,
+            SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR,
+            SwapchainCreateInfoKHR, SwapchainKHR, Viewport, SUBPASS_EXTERNAL,
         },
         Device, Entry, Instance,
     },
@@ -146,7 +155,7 @@ fn main() -> Result<()> {
 
         // create the swapchain
         let swapchain_ext = Swapchain::new(&instance, &logical_device);
-        let (swapchain, format) = create_swapchain(
+        let (swapchain, format, swapchain_extent) = create_swapchain(
             &swapchain_ext,
             surface,
             &surface_info,
@@ -161,6 +170,18 @@ fn main() -> Result<()> {
         let fragment_shader =
             create_shader_module(&logical_device, shader_mapping["triangle.frag"])?;
 
+        // create graphics pipeline etc.
+        let pipeline_layout = create_pipeline_layout(&logical_device)?;
+        let render_pass = create_render_pass(&logical_device, format)?;
+        let graphics_pipeline = create_graphics_pipeline(
+            vertex_shader,
+            fragment_shader,
+            swapchain_extent,
+            pipeline_layout,
+            render_pass,
+            &logical_device,
+        )?;
+
         let error_code = run_event_loop(event_loop, window);
         cleanup(
             instance,
@@ -173,6 +194,9 @@ fn main() -> Result<()> {
             swapchain,
             swapchain_images,
             &[vertex_shader, fragment_shader],
+            pipeline_layout,
+            render_pass,
+            graphics_pipeline,
         );
         if error_code == 0 {
             Ok(())
@@ -183,6 +207,140 @@ fn main() -> Result<()> {
         }
     }
     .context("Error in main.")
+}
+
+////////////////////////// Pipeline ///////////////////////////////////
+fn create_pipeline_layout(device: &Device) -> Result<PipelineLayout> {
+    unsafe {
+        device.create_pipeline_layout(
+            &PipelineLayoutCreateInfo::builder()
+                .set_layouts(&[])
+                .push_constant_ranges(&[]),
+            None,
+        )
+    }
+    .context("Error trying to create a pipeline layout.")
+}
+
+fn create_render_pass(device: &Device, format: Format) -> Result<RenderPass> {
+    unsafe {
+        let attachment_descriptions = [*AttachmentDescription::builder()
+            .format(format)
+            .samples(SampleCountFlags::TYPE_1)
+            .load_op(AttachmentLoadOp::CLEAR)
+            .store_op(AttachmentStoreOp::STORE)
+            .stencil_load_op(AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(AttachmentStoreOp::DONT_CARE)
+            .initial_layout(ImageLayout::UNDEFINED)
+            .final_layout(ImageLayout::PRESENT_SRC_KHR)];
+        let attachment_references = [*AttachmentReference::builder()
+            .attachment(0)
+            .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let subpass_descriptions = [*SubpassDescription::builder()
+            .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
+            .color_attachments(&attachment_references)];
+        let subpass_dependencies = [
+            *SubpassDependency::builder()
+                .src_subpass(SUBPASS_EXTERNAL)
+                .dst_subpass(0)
+                .src_stage_mask(PipelineStageFlags::BOTTOM_OF_PIPE)
+                .dst_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .src_access_mask(AccessFlags::MEMORY_READ)
+                .dst_access_mask(
+                    AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE,
+                ),
+            *SubpassDependency::builder()
+                .src_subpass(0)
+                .dst_subpass(SUBPASS_EXTERNAL)
+                .src_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .dst_stage_mask(PipelineStageFlags::BOTTOM_OF_PIPE)
+                .src_access_mask(
+                    AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE,
+                )
+                .dst_access_mask(AccessFlags::MEMORY_READ),
+        ];
+        device.create_render_pass(
+            &RenderPassCreateInfo::builder()
+                .attachments(&attachment_descriptions)
+                .subpasses(&subpass_descriptions)
+                .dependencies(&subpass_dependencies),
+            None,
+        )
+    }
+    .context("Error trying to create a render pass.")
+}
+
+fn create_graphics_pipeline(
+    vertex_shader: ShaderModule,
+    fragment_shader: ShaderModule,
+    swapchain_extents: Extent2D,
+    pipeline_layout: PipelineLayout,
+    render_pass: RenderPass,
+    device: &Device,
+) -> Result<Pipeline> {
+    let name = unsafe { CStr::from_bytes_with_nul_unchecked(b"main\0") };
+    let shader_stages = [
+        *PipelineShaderStageCreateInfo::builder()
+            .stage(ShaderStageFlags::VERTEX)
+            .module(vertex_shader)
+            .name(name),
+        *PipelineShaderStageCreateInfo::builder()
+            .stage(ShaderStageFlags::FRAGMENT)
+            .module(fragment_shader)
+            .name(name),
+    ];
+    let vertex_input = PipelineVertexInputStateCreateInfo::builder();
+    let input_assembly = PipelineInputAssemblyStateCreateInfo::builder()
+        .topology(PrimitiveTopology::TRIANGLE_LIST)
+        .primitive_restart_enable(false);
+    let viewports = [Viewport {
+        width: swapchain_extents.width as f32,
+        height: swapchain_extents.height as f32,
+        max_depth: 1.0,
+        ..Viewport::default()
+    }];
+    let scissors = [Rect2D {
+        extent: swapchain_extents,
+        ..Rect2D::default()
+    }];
+    let viewport_state = PipelineViewportStateCreateInfo::builder()
+        .viewports(&viewports)
+        .scissors(&scissors);
+    let rasterization_state = PipelineRasterizationStateCreateInfo::builder()
+        .polygon_mode(PolygonMode::FILL)
+        .cull_mode(CullModeFlags::BACK)
+        .front_face(FrontFace::CLOCKWISE)
+        .line_width(1.0);
+    let multisample = PipelineMultisampleStateCreateInfo::builder()
+        .rasterization_samples(SampleCountFlags::TYPE_1);
+    let color_blend_attachments = [*PipelineColorBlendAttachmentState::builder()
+        .blend_enable(true)
+        .color_write_mask(ColorComponentFlags::RGBA)
+        .src_color_blend_factor(BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .color_blend_op(BlendOp::ADD)
+        .src_alpha_blend_factor(BlendFactor::ONE)
+        .dst_alpha_blend_factor(BlendFactor::ZERO)
+        .alpha_blend_op(BlendOp::ADD)];
+    let color_blend =
+        PipelineColorBlendStateCreateInfo::builder().attachments(&color_blend_attachments);
+    let graphics_pipeline_create_infos = [*GraphicsPipelineCreateInfo::builder()
+        .stages(&shader_stages)
+        .vertex_input_state(&vertex_input)
+        .input_assembly_state(&input_assembly)
+        .viewport_state(&viewport_state)
+        .rasterization_state(&rasterization_state)
+        .multisample_state(&multisample)
+        .color_blend_state(&color_blend)
+        .layout(pipeline_layout)
+        .render_pass(render_pass)
+        .subpass(0)];
+    unsafe {
+        let pipelines = device
+            .create_graphics_pipelines(PipelineCache::null(), &graphics_pipeline_create_infos, None)
+            .map_err(|(_, e)| e)?;
+        Ok(pipelines[0])
+    }
 }
 
 ////////////////////////// Shaders ////////////////////////////////////
@@ -204,13 +362,14 @@ fn create_swapchain(
     surface_info: &SurfaceInfo,
     queue_family_indices: &QueueFamilyIndices,
     window: &Window,
-) -> Result<(SwapchainKHR, Format)> {
+) -> Result<(SwapchainKHR, Format, Extent2D)> {
     unsafe {
         let min_image_count = cmp::min(
             surface_info.surface_capabilities.max_image_count,
             surface_info.surface_capabilities.min_image_count + 1,
         );
         let best_format = surface_info.choose_best_color_format();
+        let swapchain_extent = surface_info.choose_swapchain_extents(window);
         let queue_family_indices = [
             queue_family_indices.graphics_family.unwrap(),
             queue_family_indices.presentation_family.unwrap(),
@@ -221,7 +380,7 @@ fn create_swapchain(
             .min_image_count(min_image_count)
             .image_format(best_format.format)
             .image_color_space(best_format.color_space)
-            .image_extent(surface_info.choose_swapchain_extents(window))
+            .image_extent(swapchain_extent)
             .image_array_layers(1)
             .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
             .pre_transform(surface_info.surface_capabilities.current_transform)
@@ -238,7 +397,7 @@ fn create_swapchain(
         let swapchain = swapchain_ext
             .create_swapchain(&create_info, None)
             .context("Error while creating a swapchain.")?;
-        Ok((swapchain, best_format.format))
+        Ok((swapchain, best_format.format, swapchain_extent))
     }
 }
 
@@ -655,11 +814,17 @@ fn cleanup(
     swapchain: SwapchainKHR,
     swapchain_images: Vec<SwapchainImage>,
     shader_modules: &[ShaderModule],
+    pipeline_layout: PipelineLayout,
+    render_pass: RenderPass,
+    graphics_pipeline: Pipeline,
 ) {
     unsafe {
         for shader_module in shader_modules {
             device.destroy_shader_module(*shader_module, None);
         }
+        device.destroy_pipeline(graphics_pipeline, None);
+        device.destroy_render_pass(render_pass, None);
+        device.destroy_pipeline_layout(pipeline_layout, None);
         for swapchain_image in swapchain_images {
             device.destroy_image_view(swapchain_image.image_view, None);
         }
