@@ -239,26 +239,13 @@ fn create_render_pass(device: &Device, format: Format) -> Result<RenderPass> {
         let subpass_descriptions = [*SubpassDescription::builder()
             .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
             .color_attachments(&attachment_references)];
-        let subpass_dependencies = [
-            *SubpassDependency::builder()
-                .src_subpass(SUBPASS_EXTERNAL)
-                .dst_subpass(0)
-                .src_stage_mask(PipelineStageFlags::BOTTOM_OF_PIPE)
-                .dst_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-                .src_access_mask(AccessFlags::MEMORY_READ)
-                .dst_access_mask(
-                    AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE,
-                ),
-            *SubpassDependency::builder()
-                .src_subpass(0)
-                .dst_subpass(SUBPASS_EXTERNAL)
-                .src_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-                .dst_stage_mask(PipelineStageFlags::BOTTOM_OF_PIPE)
-                .src_access_mask(
-                    AccessFlags::COLOR_ATTACHMENT_READ | AccessFlags::COLOR_ATTACHMENT_WRITE,
-                )
-                .dst_access_mask(AccessFlags::MEMORY_READ),
-        ];
+        let subpass_dependencies = [*SubpassDependency::builder()
+            .src_subpass(SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(AccessFlags::empty())
+            .dst_access_mask(AccessFlags::COLOR_ATTACHMENT_WRITE)];
         device.create_render_pass(
             &RenderPassCreateInfo::builder()
                 .attachments(&attachment_descriptions)
