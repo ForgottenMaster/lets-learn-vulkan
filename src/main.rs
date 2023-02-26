@@ -10,21 +10,22 @@ use {
             AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
             AttachmentStoreOp, BlendFactor, BlendOp, ClearColorValue, ClearValue,
             ColorComponentFlags, ColorSpaceKHR, CommandBuffer, CommandBufferAllocateInfo,
-            CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags, CommandPool,
-            CommandPoolCreateInfo, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
-            CullModeFlags, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+            CommandBufferBeginInfo, CommandBufferLevel, CommandPool, CommandPoolCreateInfo,
+            ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
+            DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
             DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT, Extent2D, Format, Framebuffer, FramebufferCreateInfo,
-            FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout,
-            ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-            Pipeline, PipelineBindPoint, PipelineCache, PipelineColorBlendAttachmentState,
-            PipelineColorBlendStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
-            PipelineLayout, PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
-            PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-            PipelineStageFlags, PipelineVertexInputStateCreateInfo,
-            PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology,
-            Rect2D, RenderPass, RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags,
-            ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassContents,
+            DebugUtilsMessengerEXT, Extent2D, Fence, FenceCreateFlags, FenceCreateInfo, Format,
+            Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image,
+            ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
+            ImageViewCreateInfo, ImageViewType, Pipeline, PipelineBindPoint, PipelineCache,
+            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
+            PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+            PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
+            PipelineViewportStateCreateInfo, PolygonMode, PresentInfoKHR, PresentModeKHR,
+            PrimitiveTopology, Queue, Rect2D, RenderPass, RenderPassBeginInfo,
+            RenderPassCreateInfo, SampleCountFlags, Semaphore, SemaphoreCreateInfo, ShaderModule,
+            ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubmitInfo, SubpassContents,
             SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
             SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport, SUBPASS_EXTERNAL,
         },
@@ -45,6 +46,8 @@ use {
 
 include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 
+const MAX_FRAMES: usize = 2;
+
 struct QueueFamilyIndices {
     graphics_family: Option<u32>,
     presentation_family: Option<u32>,
@@ -57,8 +60,8 @@ impl QueueFamilyIndices {
 }
 
 struct QueueHandles {
-    _graphics_queue: vk::Queue,
-    _presentation_queue: vk::Queue,
+    graphics_queue: vk::Queue,
+    presentation_queue: vk::Queue,
 }
 
 struct SurfaceInfo {
@@ -149,7 +152,7 @@ fn main() -> Result<()> {
         let (physical_device, queue_family_indices, surface_info) =
             get_physical_device(&instance, &surface_ext, surface, &device_extensions)?;
 
-        let (logical_device, _queues) = create_logical_device(
+        let (logical_device, queues) = create_logical_device(
             &instance,
             physical_device,
             &queue_family_indices,
@@ -221,7 +224,27 @@ fn main() -> Result<()> {
             graphics_pipeline,
         )?;
 
-        let error_code = run_event_loop(event_loop, window);
+        // create semaphores and fences for the number of frames we're aiming at
+        // defined by MAX_FRAMES constant.
+        let (
+            image_available_semaphores,
+            queue_submit_complete_semaphores,
+            queue_submit_complete_fences,
+        ) = create_synchronization(&logical_device, MAX_FRAMES)?;
+
+        let error_code = run_event_loop(
+            event_loop,
+            window,
+            &logical_device,
+            swapchain,
+            &image_available_semaphores,
+            &queue_submit_complete_semaphores,
+            &queue_submit_complete_fences,
+            &swapchain_ext,
+            queues.graphics_queue,
+            queues.presentation_queue,
+            &command_buffers,
+        );
         cleanup(
             instance,
             logical_device,
@@ -238,6 +261,9 @@ fn main() -> Result<()> {
             graphics_pipeline,
             framebuffers,
             graphics_command_pool,
+            image_available_semaphores,
+            queue_submit_complete_semaphores,
+            queue_submit_complete_fences,
         );
         if error_code == 0 {
             Ok(())
@@ -250,6 +276,106 @@ fn main() -> Result<()> {
     .context("Error in main.")
 }
 
+////////////////////////// Drawing ////////////////////////////////////
+#[allow(clippy::too_many_arguments)]
+fn draw(
+    device: &Device,
+    swapchain: SwapchainKHR,
+    image_available_semaphore: Semaphore,
+    queue_submit_complete_semaphore: Semaphore,
+    queue_submit_complete_fence: Fence,
+    swapchain_ext: &Swapchain,
+    graphics_queue: Queue,
+    present_queue: Queue,
+    command_buffers: &[CommandBuffer],
+) -> Result<()> {
+    // wait on the fence being ready from the previou submit and reset after proceeding.
+    unsafe {
+        device
+            .wait_for_fences(&[queue_submit_complete_fence], true, u64::MAX)
+            .context("Failed to wait for fence while drawing image.")?;
+        device
+            .reset_fences(&[queue_submit_complete_fence])
+            .context("Failed to reset fence while drawing image.")?;
+
+        // acquire next image index.
+        let (image_index, _) = swapchain_ext
+            .acquire_next_image(
+                swapchain,
+                u64::MAX,
+                image_available_semaphore,
+                Fence::null(),
+            )
+            .context("Failed to acquire next image while drawing.")?;
+
+        // submit correct command buffer to the graphics queue.
+        let wait_semaphores = [image_available_semaphore];
+        let wait_dst_stages = [PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let command_buffers = [command_buffers[image_index as usize]];
+        let signal_semaphores = [queue_submit_complete_semaphore];
+        let submit_infos = [*SubmitInfo::builder()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_dst_stages)
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_semaphores)];
+        device
+            .queue_submit(graphics_queue, &submit_infos, queue_submit_complete_fence)
+            .context("Error while submitting command buffer to he queue during rendering.")?;
+
+        // present the image for rendering.
+        let wait_semaphores = [queue_submit_complete_semaphore];
+        let swapchains = [swapchain];
+        let image_indices = [image_index];
+        swapchain_ext
+            .queue_present(
+                present_queue,
+                &PresentInfoKHR::builder()
+                    .wait_semaphores(&wait_semaphores)
+                    .swapchains(&swapchains)
+                    .image_indices(&image_indices),
+            )
+            .context("Error while presenting image to the swapchain.")?;
+    }
+    Ok(())
+}
+
+////////////////////////// Synchronization ////////////////////////////
+fn create_synchronization(
+    device: &Device,
+    amount: usize,
+) -> Result<(Vec<Semaphore>, Vec<Semaphore>, Vec<Fence>)> {
+    let semaphore_builder = SemaphoreCreateInfo::builder();
+    let fence_builder = FenceCreateInfo::builder().flags(FenceCreateFlags::SIGNALED);
+
+    let image_available_semaphores = (0..amount)
+        .map(|_| unsafe {
+            device
+                .create_semaphore(&semaphore_builder, None)
+                .context("Failed to create an image available semaphore.")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let queue_submit_complete_semaphores = (0..amount)
+        .map(|_| unsafe {
+            device
+                .create_semaphore(&semaphore_builder, None)
+                .context("Failed to create a queue submit complete semaphore.")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let queue_submit_complete_fences = (0..amount)
+        .map(|_| unsafe {
+            device
+                .create_fence(&fence_builder, None)
+                .context("Failed to create a queue submit complete fence.")
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok((
+        image_available_semaphores,
+        queue_submit_complete_semaphores,
+        queue_submit_complete_fences,
+    ))
+}
+
 ////////////////////////// Command Buffers ////////////////////////////
 fn record_command_buffers(
     device: &Device,
@@ -259,15 +385,11 @@ fn record_command_buffers(
     swapchain_extent: Extent2D,
     graphics_pipeline: Pipeline,
 ) -> Result<()> {
-    for (command_buffer, framebuffer) in command_buffers.into_iter().zip(framebuffers) {
+    for (command_buffer, framebuffer) in command_buffers.iter().zip(framebuffers) {
         unsafe {
             // begin command buffer
             device
-                .begin_command_buffer(
-                    *command_buffer,
-                    &CommandBufferBeginInfo::builder()
-                        .flags(CommandBufferUsageFlags::SIMULTANEOUS_USE),
-                )
+                .begin_command_buffer(*command_buffer, &CommandBufferBeginInfo::builder())
                 .context("Failed to begin command buffer.")?;
 
             // begin render pass
@@ -432,7 +554,8 @@ fn create_graphics_pipeline(
         .primitive_restart_enable(false);
     let viewports = [Viewport {
         width: swapchain_extents.width as f32,
-        height: swapchain_extents.height as f32,
+        height: -(swapchain_extents.height as f32),
+        y: swapchain_extents.height as f32,
         max_depth: 1.0,
         ..Viewport::default()
     }];
@@ -629,7 +752,22 @@ fn create_window(event_loop: &EventLoop<()>) -> Result<Window> {
         .context("Error in create_window.")
 }
 
-fn run_event_loop(mut event_loop: EventLoop<()>, window: Window) -> i32 {
+#[allow(clippy::too_many_arguments)]
+fn run_event_loop(
+    mut event_loop: EventLoop<()>,
+    window: Window,
+    device: &Device,
+    swapchain: SwapchainKHR,
+    image_available_semaphores: &[Semaphore],
+    queue_submit_complete_semaphores: &[Semaphore],
+    queue_submit_complete_fences: &[Fence],
+    swapchain_ext: &Swapchain,
+    graphics_queue: Queue,
+    present_queue: Queue,
+    command_buffers: &[CommandBuffer],
+) -> i32 {
+    let mut current_frame = 0;
+    let max_frames = image_available_semaphores.len();
     event_loop.run_return(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -638,6 +776,21 @@ fn run_event_loop(mut event_loop: EventLoop<()>, window: Window) -> i32 {
                 event: WindowEvent::CloseRequested,
                 window_id,
             } if window_id == window.id() => *control_flow = ControlFlow::Exit,
+            Event::MainEventsCleared => {
+                draw(
+                    device,
+                    swapchain,
+                    image_available_semaphores[current_frame],
+                    queue_submit_complete_semaphores[current_frame],
+                    queue_submit_complete_fences[current_frame],
+                    swapchain_ext,
+                    graphics_queue,
+                    present_queue,
+                    command_buffers,
+                )
+                .unwrap();
+                current_frame = (current_frame + 1) % max_frames;
+            }
             _ => (),
         }
     })
@@ -868,10 +1021,10 @@ fn create_logical_device(
         // # Safety
         // This is safe to call due to the same assumptions as above.
         let queues = QueueHandles {
-            _graphics_queue: unsafe {
+            graphics_queue: unsafe {
                 device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0)
             },
-            _presentation_queue: unsafe {
+            presentation_queue: unsafe {
                 device.get_device_queue(queue_family_indices.presentation_family.unwrap(), 0)
             },
         };
@@ -956,8 +1109,21 @@ fn cleanup(
     graphics_pipeline: Pipeline,
     framebuffers: Vec<Framebuffer>,
     command_pool: CommandPool,
+    image_available_semaphores: Vec<Semaphore>,
+    queue_submit_complete_semaphores: Vec<Semaphore>,
+    queue_submit_complete_fences: Vec<Fence>,
 ) {
     unsafe {
+        device.device_wait_idle().unwrap();
+        for semaphore in image_available_semaphores {
+            device.destroy_semaphore(semaphore, None);
+        }
+        for semaphore in queue_submit_complete_semaphores {
+            device.destroy_semaphore(semaphore, None);
+        }
+        for fence in queue_submit_complete_fences {
+            device.destroy_fence(fence, None);
+        }
         device.destroy_command_pool(command_pool, None);
         for framebuffer in framebuffers {
             device.destroy_framebuffer(framebuffer, None);
