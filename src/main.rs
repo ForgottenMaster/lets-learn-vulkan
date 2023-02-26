@@ -8,22 +8,25 @@ use {
         vk,
         vk::{
             AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-            AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags, ColorSpaceKHR,
-            ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
-            DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+            AttachmentStoreOp, BlendFactor, BlendOp, ClearColorValue, ClearValue,
+            ColorComponentFlags, ColorSpaceKHR, CommandBuffer, CommandBufferAllocateInfo,
+            CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags, CommandPool,
+            CommandPoolCreateInfo, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
+            CullModeFlags, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
             DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT, Extent2D, Format, FrontFace, GraphicsPipelineCreateInfo, Image,
-            ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
-            ImageViewCreateInfo, ImageViewType, Pipeline, PipelineBindPoint, PipelineCache,
-            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-            PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
-            PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
-            PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
+            DebugUtilsMessengerEXT, Extent2D, Format, Framebuffer, FramebufferCreateInfo,
+            FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout,
+            ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+            Pipeline, PipelineBindPoint, PipelineCache, PipelineColorBlendAttachmentState,
+            PipelineColorBlendStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
+            PipelineLayout, PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
+            PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
+            PipelineStageFlags, PipelineVertexInputStateCreateInfo,
             PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology,
-            Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
-            ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDependency,
-            SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR, SurfaceKHR,
-            SwapchainCreateInfoKHR, SwapchainKHR, Viewport, SUBPASS_EXTERNAL,
+            Rect2D, RenderPass, RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags,
+            ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassContents,
+            SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
+            SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport, SUBPASS_EXTERNAL,
         },
         Device, Entry, Instance,
     },
@@ -182,6 +185,42 @@ fn main() -> Result<()> {
             &logical_device,
         )?;
 
+        // create framebuffers for swapchain images
+        let framebuffers = swapchain_images
+            .iter()
+            .map(|image| {
+                create_framebuffer(
+                    &logical_device,
+                    render_pass,
+                    image.image_view,
+                    swapchain_extent,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // create a command pool for the graphics queue family that we'll use for draw commands.
+        let graphics_command_pool = create_command_pool(
+            &logical_device,
+            queue_family_indices.graphics_family.unwrap(),
+        )?;
+
+        // allocate command buffers from the graphics queue family.
+        let command_buffers = allocate_command_buffers(
+            &logical_device,
+            graphics_command_pool,
+            swapchain_images.len() as u32,
+        )?;
+
+        // record into the command buffers.
+        record_command_buffers(
+            &logical_device,
+            &command_buffers,
+            &framebuffers,
+            render_pass,
+            swapchain_extent,
+            graphics_pipeline,
+        )?;
+
         let error_code = run_event_loop(event_loop, window);
         cleanup(
             instance,
@@ -197,6 +236,8 @@ fn main() -> Result<()> {
             pipeline_layout,
             render_pass,
             graphics_pipeline,
+            framebuffers,
+            graphics_command_pool,
         );
         if error_code == 0 {
             Ok(())
@@ -207,6 +248,115 @@ fn main() -> Result<()> {
         }
     }
     .context("Error in main.")
+}
+
+////////////////////////// Command Buffers ////////////////////////////
+fn record_command_buffers(
+    device: &Device,
+    command_buffers: &[CommandBuffer],
+    framebuffers: &[Framebuffer],
+    render_pass: RenderPass,
+    swapchain_extent: Extent2D,
+    graphics_pipeline: Pipeline,
+) -> Result<()> {
+    for (command_buffer, framebuffer) in command_buffers.into_iter().zip(framebuffers) {
+        unsafe {
+            // begin command buffer
+            device
+                .begin_command_buffer(
+                    *command_buffer,
+                    &CommandBufferBeginInfo::builder()
+                        .flags(CommandBufferUsageFlags::SIMULTANEOUS_USE),
+                )
+                .context("Failed to begin command buffer.")?;
+
+            // begin render pass
+            let clear_values = [ClearValue {
+                color: ClearColorValue {
+                    float32: [0.6, 0.65, 0.4, 1.0],
+                },
+            }];
+            device.cmd_begin_render_pass(
+                *command_buffer,
+                &RenderPassBeginInfo::builder()
+                    .render_pass(render_pass)
+                    .framebuffer(*framebuffer)
+                    .render_area(*Rect2D::builder().extent(swapchain_extent))
+                    .clear_values(&clear_values),
+                SubpassContents::INLINE,
+            );
+
+            // bind pipeline
+            device.cmd_bind_pipeline(
+                *command_buffer,
+                PipelineBindPoint::GRAPHICS,
+                graphics_pipeline,
+            );
+
+            // draw vertices
+            device.cmd_draw(*command_buffer, 3, 1, 0, 0);
+
+            // end render pass
+            device.cmd_end_render_pass(*command_buffer);
+
+            // end command buffer
+            device
+                .end_command_buffer(*command_buffer)
+                .context("Failed to end command buffer.")?;
+        }
+    }
+    Ok(())
+}
+
+fn allocate_command_buffers(
+    device: &Device,
+    command_pool: CommandPool,
+    buffer_count: u32,
+) -> Result<Vec<CommandBuffer>> {
+    unsafe {
+        device
+            .allocate_command_buffers(
+                &CommandBufferAllocateInfo::builder()
+                    .command_pool(command_pool)
+                    .level(CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(buffer_count),
+            )
+            .context("Failed to allocate command buffers.")
+    }
+}
+
+fn create_command_pool(device: &Device, queue_family_index: u32) -> Result<CommandPool> {
+    unsafe {
+        device
+            .create_command_pool(
+                &CommandPoolCreateInfo::builder().queue_family_index(queue_family_index),
+                None,
+            )
+            .context("Failed to create a command pool.")
+    }
+}
+
+////////////////////////// Framebuffer ////////////////////////////////
+fn create_framebuffer(
+    device: &Device,
+    render_pass: RenderPass,
+    image_view: ImageView,
+    swapchain_extent: Extent2D,
+) -> Result<Framebuffer> {
+    let attachments = [image_view];
+    unsafe {
+        device
+            .create_framebuffer(
+                &FramebufferCreateInfo::builder()
+                    .render_pass(render_pass)
+                    .attachments(&attachments)
+                    .width(swapchain_extent.width)
+                    .height(swapchain_extent.height)
+                    .layers(1),
+                None,
+            )
+            .context("Failed to create a framebuffer.")
+    }
 }
 
 ////////////////////////// Pipeline ///////////////////////////////////
@@ -804,8 +954,14 @@ fn cleanup(
     pipeline_layout: PipelineLayout,
     render_pass: RenderPass,
     graphics_pipeline: Pipeline,
+    framebuffers: Vec<Framebuffer>,
+    command_pool: CommandPool,
 ) {
     unsafe {
+        device.destroy_command_pool(command_pool, None);
+        for framebuffer in framebuffers {
+            device.destroy_framebuffer(framebuffer, None);
+        }
         for shader_module in shader_modules {
             device.destroy_shader_module(*shader_module, None);
         }
