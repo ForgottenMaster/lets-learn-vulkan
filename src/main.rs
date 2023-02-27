@@ -1,5 +1,5 @@
 use {
-    anyhow::{Context, Error, Result},
+    anyhow::{anyhow, Context, Error, Result},
     ash::{
         extensions::{
             ext::DebugUtils,
@@ -8,17 +8,19 @@ use {
         vk,
         vk::{
             AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-            AttachmentStoreOp, BlendFactor, BlendOp, ClearColorValue, ClearValue,
-            ColorComponentFlags, ColorSpaceKHR, CommandBuffer, CommandBufferAllocateInfo,
-            CommandBufferBeginInfo, CommandBufferLevel, CommandPool, CommandPoolCreateInfo,
-            ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
-            DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+            AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCreateInfo, BufferUsageFlags,
+            ClearColorValue, ClearValue, ColorComponentFlags, ColorSpaceKHR, CommandBuffer,
+            CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel, CommandPool,
+            CommandPoolCreateInfo, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
+            CullModeFlags, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
             DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT, Extent2D, Fence, FenceCreateFlags, FenceCreateInfo, Format,
-            Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image,
-            ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
-            ImageViewCreateInfo, ImageViewType, Pipeline, PipelineBindPoint, PipelineCache,
-            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            DebugUtilsMessengerEXT, DeviceMemory, Extent2D, Fence, FenceCreateFlags,
+            FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, FrontFace,
+            GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout,
+            ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+            MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
+            PhysicalDevice, PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint,
+            PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
             PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
             PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
             PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
@@ -27,14 +29,15 @@ use {
             RenderPassCreateInfo, SampleCountFlags, Semaphore, SemaphoreCreateInfo, ShaderModule,
             ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubmitInfo, SubpassContents,
             SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
-            SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport, SUBPASS_EXTERNAL,
+            SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, VertexInputAttributeDescription,
+            VertexInputBindingDescription, VertexInputRate, Viewport, SUBPASS_EXTERNAL,
         },
         Device, Entry, Instance,
     },
     ash_window::enumerate_required_extensions,
     core::ffi::c_void,
     raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle},
-    std::{cmp, collections::HashSet, ffi::CStr},
+    std::{cmp, collections::HashSet, ffi::CStr, mem, ptr},
     winit::{
         dpi::{PhysicalSize, Size},
         event::{Event, WindowEvent},
@@ -47,6 +50,12 @@ use {
 include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 
 const MAX_FRAMES: usize = 2;
+
+#[repr(C)]
+struct Vertex {
+    position: [f32; 3], // offset 0
+    color: [f32; 3],    // offset 12
+}
 
 struct QueueFamilyIndices {
     graphics_family: Option<u32>,
@@ -214,6 +223,24 @@ fn main() -> Result<()> {
             swapchain_images.len() as u32,
         )?;
 
+        // vertex data
+        let vertex_data = [
+            Vertex {
+                position: [0.0, -0.4, 0.0],
+                color: [1.0, 0.0, 0.0],
+            },
+            Vertex {
+                position: [0.4, 0.4, 0.0],
+                color: [0.0, 1.0, 0.0],
+            },
+            Vertex {
+                position: [-0.4, 0.4, 0.0],
+                color: [0.0, 0.0, 1.0],
+            },
+        ];
+        let (vertex_buffer, vertex_buffer_memory) =
+            create_vertex_buffer(&instance, &logical_device, physical_device, &vertex_data)?;
+
         // record into the command buffers.
         record_command_buffers(
             &logical_device,
@@ -222,6 +249,8 @@ fn main() -> Result<()> {
             render_pass,
             swapchain_extent,
             graphics_pipeline,
+            vertex_buffer,
+            vertex_data.len(),
         )?;
 
         // create semaphores and fences for the number of frames we're aiming at
@@ -264,6 +293,8 @@ fn main() -> Result<()> {
             image_available_semaphores,
             queue_submit_complete_semaphores,
             queue_submit_complete_fences,
+            vertex_buffer,
+            vertex_buffer_memory,
         );
         if error_code == 0 {
             Ok(())
@@ -274,6 +305,96 @@ fn main() -> Result<()> {
         }
     }
     .context("Error in main.")
+}
+
+////////////////////////// Vertex Buffer //////////////////////////////
+fn create_vertex_buffer(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    vertices: &[Vertex],
+) -> Result<(Buffer, DeviceMemory)> {
+    // create a buffer handle of the right size.
+    let buffer = unsafe {
+        device
+            .create_buffer(
+                &BufferCreateInfo::builder()
+                    .size((mem::size_of::<Vertex>() * vertices.len()) as u64)
+                    .usage(BufferUsageFlags::VERTEX_BUFFER)
+                    .sharing_mode(SharingMode::EXCLUSIVE),
+                None,
+            )
+            .context("Failed to create a buffer.")?
+    };
+
+    // get buffer memory requirements.
+    let memory_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+    // get the memory properties for the physical device we're using.
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+
+    // find a valid memory type index for us to use.
+    let memory_type_index = find_valid_memory_type_index(
+        memory_properties,
+        memory_requirements,
+        MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+    )
+    .ok_or_else(|| anyhow!("Failed to get a valid memory type for vertex buffer."))?;
+
+    // allocate memory.
+    let buffer_memory = unsafe {
+        device
+            .allocate_memory(
+                &MemoryAllocateInfo::builder()
+                    .allocation_size(memory_requirements.size)
+                    .memory_type_index(memory_type_index as u32),
+                None,
+            )
+            .context("Failed to allocate vertex buffer memory.")?
+    };
+
+    // bind the buffer to the memory.
+    unsafe {
+        device
+            .bind_buffer_memory(buffer, buffer_memory, 0)
+            .context("Failed to bind the buffer memory to the vertex buffer.")?;
+    }
+
+    // map memory to get a pointer to write to.
+    let write_ptr = unsafe {
+        device
+            .map_memory(
+                buffer_memory,
+                0,
+                memory_requirements.size,
+                MemoryMapFlags::empty(),
+            )
+            .context("Failed to map the buffer memory.")? as *mut Vertex
+    };
+
+    // write vertex data to the mapped memory.
+    unsafe { ptr::copy(vertices.as_ptr(), write_ptr, vertices.len()) };
+
+    // unmap memory.
+    unsafe { device.unmap_memory(buffer_memory) };
+
+    Ok((buffer, buffer_memory))
+}
+
+fn find_valid_memory_type_index(
+    memory_properties: PhysicalDeviceMemoryProperties,
+    memory_requirements: MemoryRequirements,
+    flags: MemoryPropertyFlags,
+) -> Option<usize> {
+    memory_properties
+        .memory_types
+        .into_iter()
+        .enumerate()
+        .position(|(index, memory_type)| {
+            (memory_requirements.memory_type_bits & (1 << index as u32)) != 0
+                && memory_type.property_flags.contains(flags)
+        })
 }
 
 ////////////////////////// Drawing ////////////////////////////////////
@@ -377,6 +498,7 @@ fn create_synchronization(
 }
 
 ////////////////////////// Command Buffers ////////////////////////////
+#[allow(clippy::too_many_arguments)]
 fn record_command_buffers(
     device: &Device,
     command_buffers: &[CommandBuffer],
@@ -384,6 +506,8 @@ fn record_command_buffers(
     render_pass: RenderPass,
     swapchain_extent: Extent2D,
     graphics_pipeline: Pipeline,
+    vertex_buffer: Buffer,
+    vertex_count: usize,
 ) -> Result<()> {
     for (command_buffer, framebuffer) in command_buffers.iter().zip(framebuffers) {
         unsafe {
@@ -415,8 +539,11 @@ fn record_command_buffers(
                 graphics_pipeline,
             );
 
+            // bind the vertex buffer
+            device.cmd_bind_vertex_buffers(*command_buffer, 0, &[vertex_buffer], &[0]);
+
             // draw vertices
-            device.cmd_draw(*command_buffer, 3, 1, 0, 0);
+            device.cmd_draw(*command_buffer, vertex_count.try_into().unwrap(), 1, 0, 0);
 
             // end render pass
             device.cmd_end_render_pass(*command_buffer);
@@ -548,7 +675,19 @@ fn create_graphics_pipeline(
             .module(fragment_shader)
             .name(name),
     ];
-    let vertex_input = PipelineVertexInputStateCreateInfo::builder();
+    let binding_descriptions = [*VertexInputBindingDescription::builder()
+        .stride(mem::size_of::<Vertex>().try_into().unwrap())
+        .input_rate(VertexInputRate::VERTEX)];
+    let attribute_descriptions = [
+        *VertexInputAttributeDescription::builder().format(Format::R32G32B32_SFLOAT),
+        *VertexInputAttributeDescription::builder()
+            .location(1)
+            .format(Format::R32G32B32_SFLOAT)
+            .offset(12),
+    ];
+    let vertex_input = PipelineVertexInputStateCreateInfo::builder()
+        .vertex_binding_descriptions(&binding_descriptions)
+        .vertex_attribute_descriptions(&attribute_descriptions);
     let input_assembly = PipelineInputAssemblyStateCreateInfo::builder()
         .topology(PrimitiveTopology::TRIANGLE_LIST)
         .primitive_restart_enable(false);
@@ -1112,9 +1251,13 @@ fn cleanup(
     image_available_semaphores: Vec<Semaphore>,
     queue_submit_complete_semaphores: Vec<Semaphore>,
     queue_submit_complete_fences: Vec<Fence>,
+    vertex_buffer: Buffer,
+    vertex_buffer_memory: DeviceMemory,
 ) {
     unsafe {
         device.device_wait_idle().unwrap();
+        device.free_memory(vertex_buffer_memory, None);
+        device.destroy_buffer(vertex_buffer, None);
         for semaphore in image_available_semaphores {
             device.destroy_semaphore(semaphore, None);
         }
