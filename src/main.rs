@@ -19,7 +19,7 @@ use {
             FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, FrontFace,
             GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout,
             ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-            MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
+            IndexType, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
             PhysicalDevice, PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint,
             PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
             PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
@@ -239,14 +239,6 @@ fn main() -> Result<()> {
                 color: [0.0, 0.0, 1.0],
             },
             Vertex {
-                position: [0.4, 0.4, 0.0],
-                color: [0.0, 1.0, 0.0],
-            },
-            Vertex {
-                position: [-0.4, -0.4, 0.0],
-                color: [1.0, 0.0, 0.0],
-            },
-            Vertex {
                 position: [0.4, -0.4, 0.0],
                 color: [1.0, 1.0, 0.0],
             },
@@ -260,6 +252,17 @@ fn main() -> Result<()> {
             queues.graphics_queue,
         )?;
 
+        // index data
+        let index_data = [0, 1, 2, 1, 0, 3];
+        let (index_buffer, index_buffer_memory) = create_index_buffer(
+            &instance,
+            &logical_device,
+            physical_device,
+            &index_data,
+            graphics_command_pool,
+            queues.graphics_queue,
+        )?;
+
         // record into the command buffers.
         record_command_buffers(
             &logical_device,
@@ -269,7 +272,8 @@ fn main() -> Result<()> {
             swapchain_extent,
             graphics_pipeline,
             vertex_buffer,
-            vertex_data.len(),
+            index_buffer,
+            index_data.len(),
         )?;
 
         // create semaphores and fences for the number of frames we're aiming at
@@ -314,6 +318,8 @@ fn main() -> Result<()> {
             queue_submit_complete_fences,
             vertex_buffer,
             vertex_buffer_memory,
+            index_buffer,
+            index_buffer_memory,
         );
         if error_code == 0 {
             Ok(())
@@ -491,6 +497,26 @@ fn create_vertex_buffer(
     .context("Failed to create a vertex buffer.")
 }
 
+fn create_index_buffer(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    indices: &[u16],
+    transfer_command_pool: CommandPool,
+    transfer_queue: Queue,
+) -> Result<(Buffer, DeviceMemory)> {
+    create_staged_buffer(
+        instance,
+        device,
+        physical_device,
+        indices,
+        BufferUsageFlags::INDEX_BUFFER,
+        transfer_command_pool,
+        transfer_queue,
+    )
+    .context("Failed to create an index buffer.")
+}
+
 fn find_valid_memory_type_index(
     memory_properties: PhysicalDeviceMemoryProperties,
     memory_requirements: MemoryRequirements,
@@ -616,7 +642,8 @@ fn record_command_buffers(
     swapchain_extent: Extent2D,
     graphics_pipeline: Pipeline,
     vertex_buffer: Buffer,
-    vertex_count: usize,
+    index_buffer: Buffer,
+    index_count: usize,
 ) -> Result<()> {
     for (command_buffer, framebuffer) in command_buffers.iter().zip(framebuffers) {
         unsafe {
@@ -648,11 +675,12 @@ fn record_command_buffers(
                 graphics_pipeline,
             );
 
-            // bind the vertex buffer
+            // bind the vertex and index buffers
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &[vertex_buffer], &[0]);
+            device.cmd_bind_index_buffer(*command_buffer, index_buffer, 0, IndexType::UINT16);
 
             // draw vertices
-            device.cmd_draw(*command_buffer, vertex_count.try_into().unwrap(), 1, 0, 0);
+            device.cmd_draw_indexed(*command_buffer, index_count.try_into().unwrap(), 1, 0, 0, 0);
 
             // end render pass
             device.cmd_end_render_pass(*command_buffer);
@@ -1362,9 +1390,13 @@ fn cleanup(
     queue_submit_complete_fences: Vec<Fence>,
     vertex_buffer: Buffer,
     vertex_buffer_memory: DeviceMemory,
+    index_buffer: Buffer,
+    index_buffer_memory: DeviceMemory,
 ) {
     unsafe {
         device.device_wait_idle().unwrap();
+        device.free_memory(index_buffer_memory, None);
+        device.destroy_buffer(index_buffer, None);
         device.free_memory(vertex_buffer_memory, None);
         device.destroy_buffer(vertex_buffer, None);
         for semaphore in image_available_semaphores {
