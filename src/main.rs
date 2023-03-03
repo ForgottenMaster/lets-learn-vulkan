@@ -8,13 +8,14 @@ use {
         vk,
         vk::{
             AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-            AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCreateInfo, BufferUsageFlags,
-            ClearColorValue, ClearValue, ColorComponentFlags, ColorSpaceKHR, CommandBuffer,
-            CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel, CommandPool,
-            CommandPoolCreateInfo, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
-            CullModeFlags, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+            AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCopy, BufferCreateInfo,
+            BufferUsageFlags, ClearColorValue, ClearValue, ColorComponentFlags, ColorSpaceKHR,
+            CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
+            CommandBufferUsageFlags, CommandPool, CommandPoolCreateInfo, ComponentMapping,
+            ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
+            DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
             DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT, DeviceMemory, Extent2D, Fence, FenceCreateFlags,
+            DebugUtilsMessengerEXT, DeviceMemory, DeviceSize, Extent2D, Fence, FenceCreateFlags,
             FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, FrontFace,
             GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout,
             ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
@@ -226,7 +227,7 @@ fn main() -> Result<()> {
         // vertex data
         let vertex_data = [
             Vertex {
-                position: [0.0, -0.4, 0.0],
+                position: [-0.4, -0.4, 0.0],
                 color: [1.0, 0.0, 0.0],
             },
             Vertex {
@@ -237,9 +238,27 @@ fn main() -> Result<()> {
                 position: [-0.4, 0.4, 0.0],
                 color: [0.0, 0.0, 1.0],
             },
+            Vertex {
+                position: [0.4, 0.4, 0.0],
+                color: [0.0, 1.0, 0.0],
+            },
+            Vertex {
+                position: [-0.4, -0.4, 0.0],
+                color: [1.0, 0.0, 0.0],
+            },
+            Vertex {
+                position: [0.4, -0.4, 0.0],
+                color: [1.0, 1.0, 0.0],
+            },
         ];
-        let (vertex_buffer, vertex_buffer_memory) =
-            create_vertex_buffer(&instance, &logical_device, physical_device, &vertex_data)?;
+        let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(
+            &instance,
+            &logical_device,
+            physical_device,
+            &vertex_data,
+            graphics_command_pool,
+            queues.graphics_queue,
+        )?;
 
         // record into the command buffers.
         record_command_buffers(
@@ -307,79 +326,169 @@ fn main() -> Result<()> {
     .context("Error in main.")
 }
 
-////////////////////////// Vertex Buffer //////////////////////////////
-fn create_vertex_buffer(
+////////////////////////// Buffers //////////////////////////////
+fn create_buffer(
     instance: &Instance,
     device: &Device,
     physical_device: PhysicalDevice,
-    vertices: &[Vertex],
+    usage: BufferUsageFlags,
+    memory_property_flags: MemoryPropertyFlags,
+    size: DeviceSize,
 ) -> Result<(Buffer, DeviceMemory)> {
-    // create a buffer handle of the right size.
-    let buffer = unsafe {
-        device
-            .create_buffer(
-                &BufferCreateInfo::builder()
-                    .size((mem::size_of::<Vertex>() * vertices.len()) as u64)
-                    .usage(BufferUsageFlags::VERTEX_BUFFER)
-                    .sharing_mode(SharingMode::EXCLUSIVE),
-                None,
-            )
-            .context("Failed to create a buffer.")?
-    };
+    unsafe {
+        // create a buffer handle of the right size and type.
+        let buffer = device.create_buffer(
+            &BufferCreateInfo::builder()
+                .size(size)
+                .usage(usage)
+                .sharing_mode(SharingMode::EXCLUSIVE),
+            None,
+        )?;
 
-    // get buffer memory requirements.
-    let memory_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        // get buffer memory requirements plus the memory properties of our physical device.
+        let memory_requirements = device.get_buffer_memory_requirements(buffer);
+        let memory_properties = instance.get_physical_device_memory_properties(physical_device);
 
-    // get the memory properties for the physical device we're using.
-    let memory_properties =
-        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        // find a valid memory type index to use.
+        let memory_type_index = find_valid_memory_type_index(
+            memory_properties,
+            memory_requirements,
+            memory_property_flags,
+        )
+        .ok_or_else(|| anyhow!("Failed to get a valid memory type for buffer."))?;
 
-    // find a valid memory type index for us to use.
-    let memory_type_index = find_valid_memory_type_index(
-        memory_properties,
-        memory_requirements,
-        MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-    )
-    .ok_or_else(|| anyhow!("Failed to get a valid memory type for vertex buffer."))?;
-
-    // allocate memory.
-    let buffer_memory = unsafe {
-        device
+        // allocate memory.
+        let buffer_memory = device
             .allocate_memory(
                 &MemoryAllocateInfo::builder()
                     .allocation_size(memory_requirements.size)
                     .memory_type_index(memory_type_index as u32),
                 None,
             )
-            .context("Failed to allocate vertex buffer memory.")?
-    };
+            .context("Failed to allocate buffer memory.")?;
 
-    // bind the buffer to the memory.
-    unsafe {
+        // bind buffer memory.
         device
             .bind_buffer_memory(buffer, buffer_memory, 0)
-            .context("Failed to bind the buffer memory to the vertex buffer.")?;
+            .context("Failed to bind buffer memory to the buffer.")?;
+
+        // return.
+        Ok::<_, Error>((buffer, buffer_memory))
+    }
+    .context("Error when trying to create a buffer of some type.")
+}
+
+fn create_staged_buffer<T>(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    elements: &[T],
+    usage: BufferUsageFlags,
+    transfer_command_pool: CommandPool,
+    transfer_queue: Queue,
+) -> Result<(Buffer, DeviceMemory)> {
+    // determine the size needed
+    let size = (mem::size_of::<T>() * elements.len()) as DeviceSize;
+
+    // create the GPU buffer and CPU buffer
+    let (staging_buffer, staging_buffer_memory) = create_buffer(
+        instance,
+        device,
+        physical_device,
+        usage | BufferUsageFlags::TRANSFER_SRC,
+        MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+        size,
+    )
+    .context("Failed to create staging buffer.")?;
+    let (gpu_buffer, gpu_buffer_memory) = create_buffer(
+        instance,
+        device,
+        physical_device,
+        usage | BufferUsageFlags::TRANSFER_DST,
+        MemoryPropertyFlags::DEVICE_LOCAL,
+        size,
+    )
+    .context("Failed to create GPU buffer.")?;
+
+    // unsafe stuff now
+    unsafe {
+        // upload data to the staging buffer
+        let write_ptr = device
+            .map_memory(staging_buffer_memory, 0, size, MemoryMapFlags::empty())
+            .context("Failed to map the staging buffer memory.")? as *mut T;
+        ptr::copy_nonoverlapping(elements.as_ptr(), write_ptr, elements.len());
+        device.unmap_memory(staging_buffer_memory);
+
+        // allocate a (one time submit) command buffer from the pool to do the transfer
+        let command_buffer = device
+            .allocate_command_buffers(
+                &CommandBufferAllocateInfo::builder()
+                    .command_pool(transfer_command_pool)
+                    .level(CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )
+            .context("Failed to allocate a staging transfer command buffer.")?[0];
+
+        // record the transfer command from staging to GPU buffer
+        device
+            .begin_command_buffer(
+                command_buffer,
+                &CommandBufferBeginInfo::builder().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )
+            .context("Failed to begin recording the command buffer.")?;
+
+        // transfer.
+        device.cmd_copy_buffer(
+            command_buffer,
+            staging_buffer,
+            gpu_buffer,
+            &[*BufferCopy::builder().size(size)],
+        );
+
+        // end command buffer recording
+        device
+            .end_command_buffer(command_buffer)
+            .context("Failed to end recording the command buffer.")?;
+
+        // submit the command buffer to the transfer queue
+        let command_buffers = [command_buffer];
+        let submit_infos = [*SubmitInfo::builder().command_buffers(&command_buffers)];
+        device
+            .queue_submit(transfer_queue, &submit_infos, Fence::null())
+            .context("Failed to submit the command buffer to the queue.")?;
+        device
+            .queue_wait_idle(transfer_queue)
+            .context("Failed to wait for the transfer to finish.")?;
+
+        // free the command buffer
+        device.free_command_buffers(transfer_command_pool, &[command_buffer]);
+
+        // free staging buffer
+        device.free_memory(staging_buffer_memory, None);
+        device.destroy_buffer(staging_buffer, None);
     }
 
-    // map memory to get a pointer to write to.
-    let write_ptr = unsafe {
-        device
-            .map_memory(
-                buffer_memory,
-                0,
-                memory_requirements.size,
-                MemoryMapFlags::empty(),
-            )
-            .context("Failed to map the buffer memory.")? as *mut Vertex
-    };
+    Ok((gpu_buffer, gpu_buffer_memory))
+}
 
-    // write vertex data to the mapped memory.
-    unsafe { ptr::copy(vertices.as_ptr(), write_ptr, vertices.len()) };
-
-    // unmap memory.
-    unsafe { device.unmap_memory(buffer_memory) };
-
-    Ok((buffer, buffer_memory))
+fn create_vertex_buffer(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    vertices: &[Vertex],
+    transfer_command_pool: CommandPool,
+    transfer_queue: Queue,
+) -> Result<(Buffer, DeviceMemory)> {
+    create_staged_buffer(
+        instance,
+        device,
+        physical_device,
+        vertices,
+        BufferUsageFlags::VERTEX_BUFFER,
+        transfer_command_pool,
+        transfer_queue,
+    )
+    .context("Failed to create a vertex buffer.")
 }
 
 fn find_valid_memory_type_index(
