@@ -1,10 +1,7 @@
 use {
     anyhow::{anyhow, Context, Error, Result},
     ash::{
-        extensions::{
-            ext::DebugUtils,
-            khr::{Surface, Swapchain},
-        },
+        extensions::khr::{Surface, Swapchain},
         vk,
         vk::{
             AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
@@ -12,12 +9,12 @@ use {
             BufferUsageFlags, ClearColorValue, ClearValue, ColorComponentFlags, ColorSpaceKHR,
             CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
             CommandBufferUsageFlags, CommandPool, CommandPoolCreateInfo, ComponentMapping,
-            ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
-            DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-            DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-            DebugUtilsMessengerEXT, DeviceMemory, DeviceSize, Extent2D, Fence, FenceCreateFlags,
-            FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, FrontFace,
-            GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout,
+            ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DescriptorBufferInfo,
+            DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet,
+            DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
+            DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Extent2D,
+            Fence, FenceCreateFlags, FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo,
+            FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout,
             ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
             IndexType, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
             PhysicalDevice, PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint,
@@ -31,14 +28,15 @@ use {
             ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubmitInfo, SubpassContents,
             SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
             SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, VertexInputAttributeDescription,
-            VertexInputBindingDescription, VertexInputRate, Viewport, SUBPASS_EXTERNAL,
+            VertexInputBindingDescription, VertexInputRate, Viewport, WriteDescriptorSet,
+            SUBPASS_EXTERNAL,
         },
         Device, Entry, Instance,
     },
     ash_window::enumerate_required_extensions,
-    core::ffi::c_void,
+    glam::{Mat4, Vec3},
     raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle},
-    std::{cmp, collections::HashSet, ffi::CStr, mem, ptr},
+    std::{cmp, collections::HashSet, ffi::CStr, mem, ptr, time::Instant},
     winit::{
         dpi::{PhysicalSize, Size},
         event::{Event, WindowEvent},
@@ -146,6 +144,13 @@ impl SurfaceInfo {
     }
 }
 
+#[repr(C)]
+struct ModelViewProjection {
+    projection: Mat4,
+    view: Mat4,
+    model: Mat4,
+}
+
 fn main() -> Result<()> {
     {
         let shader_mapping = get_compiled_shader_mapping();
@@ -156,8 +161,6 @@ fn main() -> Result<()> {
             [unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_KHR_swapchain\0") }];
 
         let surface = create_surface(&entry, &instance, &window)?;
-        let debug_utils = DebugUtils::new(&entry, &instance);
-        let messenger = create_debug_utils_messenger(&debug_utils)?;
         let surface_ext = Surface::new(&entry, &instance);
         let (physical_device, queue_family_indices, surface_info) =
             get_physical_device(&instance, &surface_ext, surface, &device_extensions)?;
@@ -187,7 +190,8 @@ fn main() -> Result<()> {
             create_shader_module(&logical_device, shader_mapping["triangle.frag"])?;
 
         // create graphics pipeline etc.
-        let pipeline_layout = create_pipeline_layout(&logical_device)?;
+        let descriptor_set_layout = create_descriptor_set_layout(&logical_device)?;
+        let pipeline_layout = create_pipeline_layout(&logical_device, &[descriptor_set_layout])?;
         let render_pass = create_render_pass(&logical_device, format)?;
         let graphics_pipeline = create_graphics_pipeline(
             vertex_shader,
@@ -263,6 +267,25 @@ fn main() -> Result<()> {
             queues.graphics_queue,
         )?;
 
+        // uniform buffers (one per swapchain image).
+        let uniform_buffers = create_uniform_buffers(
+            &instance,
+            &logical_device,
+            physical_device,
+            swapchain_images.len(),
+        )?;
+
+        // descriptors.
+        let descriptor_pool =
+            create_descriptor_pool(&logical_device, uniform_buffers.len() as u32)?;
+        let descriptor_sets = allocate_descriptor_sets(
+            &logical_device,
+            descriptor_pool,
+            descriptor_set_layout,
+            uniform_buffers.len(),
+        )?;
+        update_descriptor_sets(&logical_device, &uniform_buffers, &descriptor_sets);
+
         // record into the command buffers.
         record_command_buffers(
             &logical_device,
@@ -274,6 +297,8 @@ fn main() -> Result<()> {
             vertex_buffer,
             index_buffer,
             index_data.len(),
+            &descriptor_sets,
+            pipeline_layout,
         )?;
 
         // create semaphores and fences for the number of frames we're aiming at
@@ -296,12 +321,11 @@ fn main() -> Result<()> {
             queues.graphics_queue,
             queues.presentation_queue,
             &command_buffers,
+            &uniform_buffers,
         );
         cleanup(
             instance,
             logical_device,
-            debug_utils,
-            messenger,
             surface_ext,
             surface,
             swapchain_ext,
@@ -320,6 +344,9 @@ fn main() -> Result<()> {
             vertex_buffer_memory,
             index_buffer,
             index_buffer_memory,
+            uniform_buffers,
+            descriptor_pool,
+            descriptor_set_layout,
         );
         if error_code == 0 {
             Ok(())
@@ -330,6 +357,88 @@ fn main() -> Result<()> {
         }
     }
     .context("Error in main.")
+}
+
+////////////////////////// Descriptors //////////////////////////
+fn create_descriptor_set_layout(device: &Device) -> Result<DescriptorSetLayout> {
+    unsafe {
+        device
+            .create_descriptor_set_layout(
+                &DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                    *DescriptorSetLayoutBinding::builder()
+                        .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(1)
+                        .stage_flags(ShaderStageFlags::VERTEX),
+                ]),
+                None,
+            )
+            .context("Failed to create a descriptor set layout.")
+    }
+}
+
+fn create_descriptor_pool(device: &Device, count: u32) -> Result<DescriptorPool> {
+    unsafe {
+        device
+            .create_descriptor_pool(
+                &DescriptorPoolCreateInfo::builder()
+                    .max_sets(count)
+                    .pool_sizes(&[*DescriptorPoolSize::builder()
+                        .ty(DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(count)]),
+                None,
+            )
+            .context("Failed to create a descriptor pool.")
+    }
+}
+
+fn allocate_descriptor_sets(
+    device: &Device,
+    descriptor_pool: DescriptorPool,
+    descriptor_set_layout: DescriptorSetLayout,
+    count: usize,
+) -> Result<Vec<DescriptorSet>> {
+    let layouts = std::iter::repeat(descriptor_set_layout)
+        .take(count)
+        .collect::<Vec<_>>();
+    unsafe {
+        device
+            .allocate_descriptor_sets(
+                &DescriptorSetAllocateInfo::builder()
+                    .descriptor_pool(descriptor_pool)
+                    .set_layouts(&layouts),
+            )
+            .context("Failed to allocate descriptor sets.")
+    }
+}
+
+fn update_descriptor_sets(
+    device: &Device,
+    buffers: &[(Buffer, DeviceMemory)],
+    sets: &[DescriptorSet],
+) {
+    let buffer_infos = buffers
+        .iter()
+        .map(|(buffer, _)| {
+            vec![*DescriptorBufferInfo::builder()
+                .buffer(*buffer)
+                .range(mem::size_of::<ModelViewProjection>().try_into().unwrap())]
+        })
+        .collect::<Vec<_>>();
+
+    let writes = buffer_infos
+        .iter()
+        .zip(sets)
+        .map(|(buffer_info, set)| {
+            *WriteDescriptorSet::builder()
+                .dst_set(*set)
+                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(buffer_info)
+        })
+        .collect::<Vec<_>>();
+
+    unsafe {
+        device.update_descriptor_sets(&writes, &[]);
+    }
 }
 
 ////////////////////////// Buffers //////////////////////////////
@@ -517,6 +626,29 @@ fn create_index_buffer(
     .context("Failed to create an index buffer.")
 }
 
+fn create_uniform_buffers(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    count: usize,
+) -> Result<Vec<(Buffer, DeviceMemory)>> {
+    let mut buffers = Vec::with_capacity(count);
+    for _ in 0..count {
+        buffers.push(
+            create_buffer(
+                instance,
+                device,
+                physical_device,
+                BufferUsageFlags::UNIFORM_BUFFER,
+                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                mem::size_of::<ModelViewProjection>().try_into().unwrap(),
+            )
+            .context("Failed to create a uniform buffer.")?,
+        );
+    }
+    Ok(buffers)
+}
+
 fn find_valid_memory_type_index(
     memory_properties: PhysicalDeviceMemoryProperties,
     memory_requirements: MemoryRequirements,
@@ -544,6 +676,8 @@ fn draw(
     graphics_queue: Queue,
     present_queue: Queue,
     command_buffers: &[CommandBuffer],
+    uniform_buffers: &[(Buffer, DeviceMemory)],
+    mvp: &ModelViewProjection,
 ) -> Result<()> {
     // wait on the fence being ready from the previou submit and reset after proceeding.
     unsafe {
@@ -563,6 +697,21 @@ fn draw(
                 Fence::null(),
             )
             .context("Failed to acquire next image while drawing.")?;
+
+        // update the uniform buffer with the MVP.
+        let uniform_memory = uniform_buffers[image_index as usize].1;
+        let dst = device
+            .map_memory(
+                uniform_memory,
+                0,
+                mem::size_of::<ModelViewProjection>().try_into().unwrap(),
+                MemoryMapFlags::empty(),
+            )
+            .context("Failed to map uniform buffer memory.")?
+            as *mut ModelViewProjection;
+        let src = mvp as *const ModelViewProjection;
+        ptr::copy_nonoverlapping(src, dst, 1);
+        device.unmap_memory(uniform_memory);
 
         // submit correct command buffer to the graphics queue.
         let wait_semaphores = [image_available_semaphore];
@@ -644,8 +793,14 @@ fn record_command_buffers(
     vertex_buffer: Buffer,
     index_buffer: Buffer,
     index_count: usize,
+    descriptor_sets: &[DescriptorSet],
+    pipeline_layout: PipelineLayout,
 ) -> Result<()> {
-    for (command_buffer, framebuffer) in command_buffers.iter().zip(framebuffers) {
+    for ((command_buffer, framebuffer), descriptor_set) in command_buffers
+        .iter()
+        .zip(framebuffers)
+        .zip(descriptor_sets)
+    {
         unsafe {
             // begin command buffer
             device
@@ -678,6 +833,14 @@ fn record_command_buffers(
             // bind the vertex and index buffers
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &[vertex_buffer], &[0]);
             device.cmd_bind_index_buffer(*command_buffer, index_buffer, 0, IndexType::UINT16);
+            device.cmd_bind_descriptor_sets(
+                *command_buffer,
+                PipelineBindPoint::GRAPHICS,
+                pipeline_layout,
+                0,
+                &[*descriptor_set],
+                &[],
+            );
 
             // draw vertices
             device.cmd_draw_indexed(*command_buffer, index_count.try_into().unwrap(), 1, 0, 0, 0);
@@ -746,11 +909,14 @@ fn create_framebuffer(
 }
 
 ////////////////////////// Pipeline ///////////////////////////////////
-fn create_pipeline_layout(device: &Device) -> Result<PipelineLayout> {
+fn create_pipeline_layout(
+    device: &Device,
+    set_layouts: &[DescriptorSetLayout],
+) -> Result<PipelineLayout> {
     unsafe {
         device.create_pipeline_layout(
             &PipelineLayoutCreateInfo::builder()
-                .set_layouts(&[])
+                .set_layouts(set_layouts)
                 .push_constant_ranges(&[]),
             None,
         )
@@ -983,31 +1149,6 @@ fn create_image_view(
         .context("Error while trying to create an image view.")
 }
 
-////////////////////////// Debugging //////////////////////////////////
-fn create_debug_utils_messenger(debug_utils: &DebugUtils) -> Result<DebugUtilsMessengerEXT> {
-    unsafe {
-        debug_utils.create_debug_utils_messenger(
-            &DebugUtilsMessengerCreateInfoEXT::builder()
-                .pfn_user_callback(Some(debug_callback))
-                .message_severity(DebugUtilsMessageSeverityFlagsEXT::ERROR)
-                .message_type(DebugUtilsMessageTypeFlagsEXT::VALIDATION),
-            None,
-        )
-    }
-    .context("Error while creating a debug utils messenger")
-}
-
-unsafe extern "system" fn debug_callback(
-    _severity_flags: DebugUtilsMessageSeverityFlagsEXT,
-    _type_flags: DebugUtilsMessageTypeFlagsEXT,
-    callback_data: *const DebugUtilsMessengerCallbackDataEXT,
-    _user_data: *mut c_void,
-) -> u32 {
-    let message = CStr::from_ptr((*callback_data).p_message);
-    println!("{message:?}");
-    0
-}
-
 ////////////////////////// Windowing //////////////////////////////////
 
 fn create_event_loop_and_window() -> Result<(EventLoop<()>, Window)> {
@@ -1041,11 +1182,25 @@ fn run_event_loop(
     graphics_queue: Queue,
     present_queue: Queue,
     command_buffers: &[CommandBuffer],
+    uniform_buffers: &[(Buffer, DeviceMemory)],
 ) -> i32 {
+    let PhysicalSize { width, height } = window.inner_size();
+    let aspect = width as f32 / height as f32;
+    let mut mvp = ModelViewProjection {
+        model: Mat4::IDENTITY,
+        view: Mat4::look_at_rh(
+            Vec3::new(0.0, 0.0, 2.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ),
+        projection: Mat4::perspective_rh(45.0_f32.to_radians(), aspect, 0.1, 100.0),
+    };
     let mut current_frame = 0;
     let max_frames = image_available_semaphores.len();
+    let mut last_frame_timestamp = Instant::now();
+
     event_loop.run_return(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        *control_flow = ControlFlow::Poll;
 
         match event {
             Event::WindowEvent {
@@ -1053,6 +1208,12 @@ fn run_event_loop(
                 window_id,
             } if window_id == window.id() => *control_flow = ControlFlow::Exit,
             Event::MainEventsCleared => {
+                let elapsed = last_frame_timestamp.elapsed().as_nanos() as f32 / 1_000_000_000.0;
+                mvp.model *= Mat4::from_rotation_z(100.0_f32.to_radians() * elapsed);
+                last_frame_timestamp = Instant::now();
+                window.request_redraw();
+            }
+            Event::RedrawRequested(window_id) if window_id == window.id() => {
                 draw(
                     device,
                     swapchain,
@@ -1063,6 +1224,8 @@ fn run_event_loop(
                     graphics_queue,
                     present_queue,
                     command_buffers,
+                    uniform_buffers,
+                    &mvp,
                 )
                 .unwrap();
                 current_frame = (current_frame + 1) % max_frames;
@@ -1372,8 +1535,6 @@ fn get_surface_info(
 fn cleanup(
     instance: Instance,
     device: Device,
-    debug_utils: DebugUtils,
-    messenger: DebugUtilsMessengerEXT,
     surface_ext: Surface,
     surface: SurfaceKHR,
     swapchain_ext: Swapchain,
@@ -1392,9 +1553,18 @@ fn cleanup(
     vertex_buffer_memory: DeviceMemory,
     index_buffer: Buffer,
     index_buffer_memory: DeviceMemory,
+    uniform_buffers: Vec<(Buffer, DeviceMemory)>,
+    descriptor_pool: DescriptorPool,
+    descriptor_set_layout: DescriptorSetLayout,
 ) {
     unsafe {
         device.device_wait_idle().unwrap();
+        device.destroy_descriptor_pool(descriptor_pool, None);
+        device.destroy_descriptor_set_layout(descriptor_set_layout, None);
+        for (buffer, memory) in uniform_buffers {
+            device.free_memory(memory, None);
+            device.destroy_buffer(buffer, None);
+        }
         device.free_memory(index_buffer_memory, None);
         device.destroy_buffer(index_buffer, None);
         device.free_memory(vertex_buffer_memory, None);
@@ -1423,7 +1593,6 @@ fn cleanup(
         }
         swapchain_ext.destroy_swapchain(swapchain, None);
         device.destroy_device(None);
-        debug_utils.destroy_debug_utils_messenger(messenger, None);
         surface_ext.destroy_surface(surface, None);
         instance.destroy_instance(None);
     }
