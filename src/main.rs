@@ -1208,9 +1208,10 @@ fn run_event_loop(
                 window_id,
             } if window_id == window.id() => *control_flow = ControlFlow::Exit,
             Event::MainEventsCleared => {
-                let elapsed = last_frame_timestamp.elapsed().as_nanos() as f32 / 1_000_000_000.0;
+                let timestamp = Instant::now();
+                let elapsed = timestamp.duration_since(last_frame_timestamp).as_secs_f32();
                 mvp.model *= Mat4::from_rotation_z(100.0_f32.to_radians() * elapsed);
-                last_frame_timestamp = Instant::now();
+                last_frame_timestamp = timestamp;
                 window.request_redraw();
             }
             Event::RedrawRequested(window_id) if window_id == window.id() => {
