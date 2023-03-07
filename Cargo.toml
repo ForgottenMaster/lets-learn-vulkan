@@ -2,6 +2,9 @@
 name = "lets-learn-vulkan"
 version = "0.1.0"
 edition = "2021"
+description = "This package is simply a dump for my explorations in Vulkan"
+license-file = "LICENSE"
+repository = "https://github.com/ForgottenMaster/lets-learn-vulkan"
 
 [dependencies]
 anyhow = "1.0.68"
