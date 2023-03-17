@@ -1066,10 +1066,14 @@ fn create_swapchain(
     window: &Window,
 ) -> Result<(SwapchainKHR, Format, Extent2D)> {
     unsafe {
-        let min_image_count = cmp::min(
-            surface_info.surface_capabilities.max_image_count,
-            surface_info.surface_capabilities.min_image_count + 1,
-        );
+        let min_image_count = {
+            let mut min_image_count = surface_info.surface_capabilities.min_image_count + 1;
+            let max_image_count = surface_info.surface_capabilities.max_image_count;
+            if max_image_count > 0 {
+                min_image_count = cmp::min(min_image_count, max_image_count);
+            }
+            min_image_count
+        };
         let best_format = surface_info.choose_best_color_format();
         let swapchain_extent = surface_info.choose_swapchain_extents(window);
         let queue_family_indices = [
