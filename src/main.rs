@@ -151,6 +151,14 @@ struct ModelViewProjection {
     model: Mat4,
 }
 
+struct Mesh {
+    vertex_buffer: Buffer,
+    vertex_buffer_memory: DeviceMemory,
+    index_buffer: Buffer,
+    index_buffer_memory: DeviceMemory,
+    index_count: usize,
+}
+
 fn main() -> Result<()> {
     {
         let shader_mapping = get_compiled_shader_mapping();
@@ -228,44 +236,61 @@ fn main() -> Result<()> {
             swapchain_images.len() as u32,
         )?;
 
-        // vertex data
-        let vertex_data = [
-            Vertex {
-                position: [-0.4, -0.4, 0.0],
-                color: [1.0, 0.0, 0.0],
-            },
-            Vertex {
-                position: [0.4, 0.4, 0.0],
-                color: [0.0, 1.0, 0.0],
-            },
-            Vertex {
-                position: [-0.4, 0.4, 0.0],
-                color: [0.0, 0.0, 1.0],
-            },
-            Vertex {
-                position: [0.4, -0.4, 0.0],
-                color: [1.0, 1.0, 0.0],
-            },
+        // create meshes
+        let meshes = vec![
+            create_mesh(
+                &instance,
+                &logical_device,
+                physical_device,
+                graphics_command_pool,
+                queues.graphics_queue,
+                &[
+                    Vertex {
+                        position: [-0.6, -0.2, 0.0],
+                        color: [1.0, 0.0, 0.0],
+                    },
+                    Vertex {
+                        position: [-0.2, 0.2, 0.0],
+                        color: [0.0, 1.0, 0.0],
+                    },
+                    Vertex {
+                        position: [-0.6, 0.2, 0.0],
+                        color: [0.0, 0.0, 1.0],
+                    },
+                    Vertex {
+                        position: [-0.2, -0.2, 0.0],
+                        color: [1.0, 1.0, 0.0],
+                    },
+                ],
+                &[0, 1, 2, 1, 0, 3],
+            )?,
+            create_mesh(
+                &instance,
+                &logical_device,
+                physical_device,
+                graphics_command_pool,
+                queues.graphics_queue,
+                &[
+                    Vertex {
+                        position: [0.2, -0.2, 0.0],
+                        color: [1.0, 0.0, 0.0],
+                    },
+                    Vertex {
+                        position: [0.6, 0.2, 0.0],
+                        color: [0.0, 1.0, 0.0],
+                    },
+                    Vertex {
+                        position: [0.2, 0.2, 0.0],
+                        color: [0.0, 0.0, 1.0],
+                    },
+                    Vertex {
+                        position: [0.6, -0.2, 0.0],
+                        color: [1.0, 1.0, 0.0],
+                    },
+                ],
+                &[0, 1, 2, 1, 0, 3],
+            )?,
         ];
-        let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(
-            &instance,
-            &logical_device,
-            physical_device,
-            &vertex_data,
-            graphics_command_pool,
-            queues.graphics_queue,
-        )?;
-
-        // index data
-        let index_data = [0, 1, 2, 1, 0, 3];
-        let (index_buffer, index_buffer_memory) = create_index_buffer(
-            &instance,
-            &logical_device,
-            physical_device,
-            &index_data,
-            graphics_command_pool,
-            queues.graphics_queue,
-        )?;
 
         // uniform buffers (one per swapchain image).
         let uniform_buffers = create_uniform_buffers(
@@ -294,9 +319,7 @@ fn main() -> Result<()> {
             render_pass,
             swapchain_extent,
             graphics_pipeline,
-            vertex_buffer,
-            index_buffer,
-            index_data.len(),
+            &meshes,
             &descriptor_sets,
             pipeline_layout,
         )?;
@@ -340,10 +363,7 @@ fn main() -> Result<()> {
             image_available_semaphores,
             queue_submit_complete_semaphores,
             queue_submit_complete_fences,
-            vertex_buffer,
-            vertex_buffer_memory,
-            index_buffer,
-            index_buffer_memory,
+            meshes,
             uniform_buffers,
             descriptor_pool,
             descriptor_set_layout,
@@ -357,6 +377,43 @@ fn main() -> Result<()> {
         }
     }
     .context("Error in main.")
+}
+
+////////////////////////// Meshes ///////////////////////////////
+fn create_mesh(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    transfer_command_pool: CommandPool,
+    transfer_queue: Queue,
+    vertex_buffer_data: &[Vertex],
+    index_buffer_data: &[u16],
+) -> Result<Mesh> {
+    let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(
+        instance,
+        device,
+        physical_device,
+        vertex_buffer_data,
+        transfer_command_pool,
+        transfer_queue,
+    )
+    .context("Error while trying to create vertex buffer for a mesh.")?;
+    let (index_buffer, index_buffer_memory) = create_index_buffer(
+        instance,
+        device,
+        physical_device,
+        index_buffer_data,
+        transfer_command_pool,
+        transfer_queue,
+    )
+    .context("Error while trying to create index buffer for a mesh.")?;
+    Ok(Mesh {
+        vertex_buffer,
+        vertex_buffer_memory,
+        index_buffer,
+        index_buffer_memory,
+        index_count: index_buffer_data.len(),
+    })
 }
 
 ////////////////////////// Descriptors //////////////////////////
@@ -790,9 +847,7 @@ fn record_command_buffers(
     render_pass: RenderPass,
     swapchain_extent: Extent2D,
     graphics_pipeline: Pipeline,
-    vertex_buffer: Buffer,
-    index_buffer: Buffer,
-    index_count: usize,
+    meshes: &[Mesh],
     descriptor_sets: &[DescriptorSet],
     pipeline_layout: PipelineLayout,
 ) -> Result<()> {
@@ -829,10 +884,6 @@ fn record_command_buffers(
                 PipelineBindPoint::GRAPHICS,
                 graphics_pipeline,
             );
-
-            // bind the vertex and index buffers
-            device.cmd_bind_vertex_buffers(*command_buffer, 0, &[vertex_buffer], &[0]);
-            device.cmd_bind_index_buffer(*command_buffer, index_buffer, 0, IndexType::UINT16);
             device.cmd_bind_descriptor_sets(
                 *command_buffer,
                 PipelineBindPoint::GRAPHICS,
@@ -842,8 +893,24 @@ fn record_command_buffers(
                 &[],
             );
 
-            // draw vertices
-            device.cmd_draw_indexed(*command_buffer, index_count.try_into().unwrap(), 1, 0, 0, 0);
+            // draw all the meshes
+            for mesh in meshes {
+                device.cmd_bind_vertex_buffers(*command_buffer, 0, &[mesh.vertex_buffer], &[0]);
+                device.cmd_bind_index_buffer(
+                    *command_buffer,
+                    mesh.index_buffer,
+                    0,
+                    IndexType::UINT16,
+                );
+                device.cmd_draw_indexed(
+                    *command_buffer,
+                    mesh.index_count.try_into().unwrap(),
+                    1,
+                    0,
+                    0,
+                    0,
+                );
+            }
 
             // end render pass
             device.cmd_end_render_pass(*command_buffer);
@@ -1554,10 +1621,7 @@ fn cleanup(
     image_available_semaphores: Vec<Semaphore>,
     queue_submit_complete_semaphores: Vec<Semaphore>,
     queue_submit_complete_fences: Vec<Fence>,
-    vertex_buffer: Buffer,
-    vertex_buffer_memory: DeviceMemory,
-    index_buffer: Buffer,
-    index_buffer_memory: DeviceMemory,
+    meshes: Vec<Mesh>,
     uniform_buffers: Vec<(Buffer, DeviceMemory)>,
     descriptor_pool: DescriptorPool,
     descriptor_set_layout: DescriptorSetLayout,
@@ -1570,10 +1634,12 @@ fn cleanup(
             device.free_memory(memory, None);
             device.destroy_buffer(buffer, None);
         }
-        device.free_memory(index_buffer_memory, None);
-        device.destroy_buffer(index_buffer, None);
-        device.free_memory(vertex_buffer_memory, None);
-        device.destroy_buffer(vertex_buffer, None);
+        for mesh in meshes {
+            device.free_memory(mesh.index_buffer_memory, None);
+            device.destroy_buffer(mesh.index_buffer, None);
+            device.free_memory(mesh.vertex_buffer_memory, None);
+            device.destroy_buffer(mesh.vertex_buffer, None);
+        }
         for semaphore in image_available_semaphores {
             device.destroy_semaphore(semaphore, None);
         }
