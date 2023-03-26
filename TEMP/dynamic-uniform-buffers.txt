@@ -1,0 +1,156 @@
+1. Create ability to render multiple meshes with different vertex buffer/index buffer to illustrate problem.
+-------------------------------------------------------------------------------------------
+struct Mesh {
+    vertex_buffer: Buffer,
+    vertex_buffer_memory: DeviceMemory,
+    index_buffer: Buffer,
+    index_buffer_memory: DeviceMemory,
+    index_count: usize
+}
+-------------------------------------------------------------------------------------------
+        let meshes = vec![
+            create_mesh(
+                &instance,
+                &logical_device,
+                physical_device,
+                graphics_command_pool,
+                queues.graphics_queue,
+                &[
+                    Vertex {
+                        position: [-0.6, -0.2, 0.0],
+                        color: [1.0, 0.0, 0.0],
+                    },
+                    Vertex {
+                        position: [-0.2, 0.2, 0.0],
+                        color: [0.0, 1.0, 0.0],
+                    },
+                    Vertex {
+                        position: [-0.6, 0.2, 0.0],
+                        color: [0.0, 0.0, 1.0],
+                    },
+                    Vertex {
+                        position: [-0.2, -0.2, 0.0],
+                        color: [1.0, 1.0, 0.0],
+                    },
+                ],
+                &[0, 1, 2, 1, 0, 3],
+            )?,
+            create_mesh(
+                &instance,
+                &logical_device,
+                physical_device,
+                graphics_command_pool,
+                queues.graphics_queue,
+                &[
+                    Vertex {
+                        position: [0.2, -0.2, 0.0],
+                        color: [1.0, 0.0, 0.0],
+                    },
+                    Vertex {
+                        position: [0.6, 0.2, 0.0],
+                        color: [0.0, 1.0, 0.0],
+                    },
+                    Vertex {
+                        position: [0.2, 0.2, 0.0],
+                        color: [0.0, 0.0, 1.0],
+                    },
+                    Vertex {
+                        position: [0.6, -0.2, 0.0],
+                        color: [1.0, 1.0, 0.0],
+                    },
+                ],
+                &[0, 1, 2, 1, 0, 3],
+            )?,
+        ];
+-------------------------------------------------------------------------------------------
+fn create_mesh(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    transfer_command_pool: CommandPool,
+    transfer_queue: Queue,
+    vertex_buffer_data: &[Vertex],
+    index_buffer_data: &[u16],
+) -> Result<Mesh> {
+    let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(
+        instance,
+        device,
+        physical_device,
+        vertex_buffer_data,
+        transfer_command_pool,
+        transfer_queue,
+    )
+    .context("Error while trying to create vertex buffer for a mesh.")?;
+    let (index_buffer, index_buffer_memory) = create_index_buffer(
+        instance,
+        device,
+        physical_device,
+        index_buffer_data,
+        transfer_command_pool,
+        transfer_queue,
+    )
+    .context("Error while trying to create index buffer for a mesh.")?;
+    Ok(Mesh {
+        vertex_buffer,
+        vertex_buffer_memory,
+        index_buffer,
+        index_buffer_memory,
+        index_count: index_buffer_data.len()
+    })
+}
+-------------------------------------------------------------------------------------------
+            for mesh in meshes {
+                device.cmd_bind_vertex_buffers(*command_buffer, 0, &[mesh.vertex_buffer], &[0]);
+                device.cmd_bind_index_buffer(
+                    *command_buffer,
+                    mesh.index_buffer,
+                    0,
+                    IndexType::UINT16,
+                );
+                device.cmd_draw_indexed(
+                    *command_buffer,
+                    mesh.index_count.try_into().unwrap(),
+                    1,
+                    0,
+                    0,
+                    0,
+                );
+            }
+-------------------------------------------------------------------------------------------
+        for mesh in meshes {
+            device.free_memory(mesh.index_buffer_memory, None);
+            device.destroy_buffer(mesh.index_buffer, None);
+            device.free_memory(mesh.vertex_buffer_memory, None);
+            device.destroy_buffer(mesh.vertex_buffer, None);
+        }
+-------------------------------------------------------------------------------------------
+
+2. Explain how dynamic uniform buffers are used for per-mesh data.
+3. Create a uniform buffer object (UboModel) for the per model data that'll be stored in the dynamic buffer.
+4. Rename the regular uniform buffer object to UboViewProjection to indicate that the only data in there is the constant data.
+5. Update vertex shader to split the UboModel out from projection and view.
+	- Needs binding 1 since the buffer is bound differently
+6. Allocate aligned memory for X UboModels with minimum alignment of minUniformBufferOffset.
+	- Can use the Layout type to allocate correctly aligned memory.
+	- Use Layout::repeat but will have to write own version on stable Rust.
+	- Allocate for a maximum number.
+	- Remember to free allocated memory (dealloc in Rust).
+7. Create a second binding in the descriptor set layout
+	- Binding number is 1.
+	- Descriptor type is uniform buffer dynamic.
+8. Create second uniform buffer for the dynamic ubo buffer.
+9. Descriptor pool needs changing to add a new pool size.
+	- Pool size type needs to be uniform buffer dynamic.
+	- Change max sets to swap chain images size.
+10. Update creation of descriptor sets to include the creation of the model dynamic buffers.
+	- Range is size of a single piece of data.
+	- Descriptor type is uniform buffer dynamic.
+11. Update recording of commands/command buffer.
+	- When we're looping through meshes and binding index/vertex buffers, dynamic offset is the size of a single one multiplied by the mesh index.
+	- Actually pass dynamic offset through to the vkCmdBindDescriptorSets call.
+12. Change function that updates uniform buffers for a given image index.
+	- View projection buffer is updated the same way because it's global for the whole draw call.
+	- For model buffer, should copy data to the aligned memory transfer space allocation.
+	- Write the model data to the correct location in memory.
+	- Can then copy the whole transfer space over to buffer memory.
+13. Add a mesh-specific rotation to show only one mesh rotating.
