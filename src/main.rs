@@ -145,10 +145,9 @@ impl SurfaceInfo {
 }
 
 #[repr(C)]
-struct ModelViewProjection {
+struct UboViewProjection {
     projection: Mat4,
     view: Mat4,
-    model: Mat4,
 }
 
 struct Mesh {
@@ -293,7 +292,7 @@ fn main() -> Result<()> {
         ];
 
         // uniform buffers (one per swapchain image).
-        let uniform_buffers = create_uniform_buffers(
+        let vp_uniform_buffers = create_vp_uniform_buffers(
             &instance,
             &logical_device,
             physical_device,
@@ -302,14 +301,14 @@ fn main() -> Result<()> {
 
         // descriptors.
         let descriptor_pool =
-            create_descriptor_pool(&logical_device, uniform_buffers.len() as u32)?;
+            create_descriptor_pool(&logical_device, vp_uniform_buffers.len() as u32)?;
         let descriptor_sets = allocate_descriptor_sets(
             &logical_device,
             descriptor_pool,
             descriptor_set_layout,
-            uniform_buffers.len(),
+            vp_uniform_buffers.len(),
         )?;
-        update_descriptor_sets(&logical_device, &uniform_buffers, &descriptor_sets);
+        update_descriptor_sets(&logical_device, &vp_uniform_buffers, &descriptor_sets);
 
         // record into the command buffers.
         record_command_buffers(
@@ -344,7 +343,7 @@ fn main() -> Result<()> {
             queues.graphics_queue,
             queues.presentation_queue,
             &command_buffers,
-            &uniform_buffers,
+            &vp_uniform_buffers,
         );
         cleanup(
             instance,
@@ -364,7 +363,7 @@ fn main() -> Result<()> {
             queue_submit_complete_semaphores,
             queue_submit_complete_fences,
             meshes,
-            uniform_buffers,
+            vp_uniform_buffers,
             descriptor_pool,
             descriptor_set_layout,
         );
@@ -478,7 +477,7 @@ fn update_descriptor_sets(
         .map(|(buffer, _)| {
             vec![*DescriptorBufferInfo::builder()
                 .buffer(*buffer)
-                .range(mem::size_of::<ModelViewProjection>().try_into().unwrap())]
+                .range(mem::size_of::<UboViewProjection>().try_into().unwrap())]
         })
         .collect::<Vec<_>>();
 
@@ -683,7 +682,7 @@ fn create_index_buffer(
     .context("Failed to create an index buffer.")
 }
 
-fn create_uniform_buffers(
+fn create_vp_uniform_buffers(
     instance: &Instance,
     device: &Device,
     physical_device: PhysicalDevice,
@@ -698,7 +697,7 @@ fn create_uniform_buffers(
                 physical_device,
                 BufferUsageFlags::UNIFORM_BUFFER,
                 MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-                mem::size_of::<ModelViewProjection>().try_into().unwrap(),
+                mem::size_of::<UboViewProjection>().try_into().unwrap(),
             )
             .context("Failed to create a uniform buffer.")?,
         );
@@ -733,8 +732,8 @@ fn draw(
     graphics_queue: Queue,
     present_queue: Queue,
     command_buffers: &[CommandBuffer],
-    uniform_buffers: &[(Buffer, DeviceMemory)],
-    mvp: &ModelViewProjection,
+    vp_uniform_buffers: &[(Buffer, DeviceMemory)],
+    vp: &UboViewProjection,
 ) -> Result<()> {
     // wait on the fence being ready from the previou submit and reset after proceeding.
     unsafe {
@@ -755,20 +754,20 @@ fn draw(
             )
             .context("Failed to acquire next image while drawing.")?;
 
-        // update the uniform buffer with the MVP.
-        let uniform_memory = uniform_buffers[image_index as usize].1;
+        // update the uniform buffer with the VP.
+        let vp_uniform_memory = vp_uniform_buffers[image_index as usize].1;
         let dst = device
             .map_memory(
-                uniform_memory,
+                vp_uniform_memory,
                 0,
-                mem::size_of::<ModelViewProjection>().try_into().unwrap(),
+                mem::size_of::<UboViewProjection>().try_into().unwrap(),
                 MemoryMapFlags::empty(),
             )
             .context("Failed to map uniform buffer memory.")?
-            as *mut ModelViewProjection;
-        let src = mvp as *const ModelViewProjection;
+            as *mut UboViewProjection;
+        let src = vp as *const UboViewProjection;
         ptr::copy_nonoverlapping(src, dst, 1);
-        device.unmap_memory(uniform_memory);
+        device.unmap_memory(vp_uniform_memory);
 
         // submit correct command buffer to the graphics queue.
         let wait_semaphores = [image_available_semaphore];
@@ -1253,12 +1252,11 @@ fn run_event_loop(
     graphics_queue: Queue,
     present_queue: Queue,
     command_buffers: &[CommandBuffer],
-    uniform_buffers: &[(Buffer, DeviceMemory)],
+    vp_uniform_buffers: &[(Buffer, DeviceMemory)],
 ) -> i32 {
     let PhysicalSize { width, height } = window.inner_size();
     let aspect = width as f32 / height as f32;
-    let mut mvp = ModelViewProjection {
-        model: Mat4::IDENTITY,
+    let vp = UboViewProjection {
         view: Mat4::look_at_rh(
             Vec3::new(0.0, 0.0, 2.0),
             Vec3::new(0.0, 0.0, 0.0),
@@ -1280,8 +1278,8 @@ fn run_event_loop(
             } if window_id == window.id() => *control_flow = ControlFlow::Exit,
             Event::MainEventsCleared => {
                 let timestamp = Instant::now();
-                let elapsed = timestamp.duration_since(last_frame_timestamp).as_secs_f32();
-                mvp.model *= Mat4::from_rotation_z(100.0_f32.to_radians() * elapsed);
+                let _elapsed = timestamp.duration_since(last_frame_timestamp).as_secs_f32();
+                // update model matrices here
                 last_frame_timestamp = timestamp;
                 window.request_redraw();
             }
@@ -1296,8 +1294,8 @@ fn run_event_loop(
                     graphics_queue,
                     present_queue,
                     command_buffers,
-                    uniform_buffers,
-                    &mvp,
+                    vp_uniform_buffers,
+                    &vp,
                 )
                 .unwrap();
                 current_frame = (current_frame + 1) % max_frames;

@@ -123,18 +123,36 @@ fn create_mesh(
             device.free_memory(mesh.vertex_buffer_memory, None);
             device.destroy_buffer(mesh.vertex_buffer, None);
         }
+
 -------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------
 2. Explain how dynamic uniform buffers are used for per-mesh data.
+    - Show the gif of why it's needed
+    - Show an image of buffer layout in dynamic uniform buffers
+
 -------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------
-3. Create a uniform buffer object (UboModel) for the per model data that'll be stored in the dynamic buffer.
+3. Remove Model data temporarily from the project and just keep ViewProjection data.
+-------------------------------------------------------------------------------------------
+#[repr(C)]
+struct UboViewProjection {
+    projection: Mat4,
+    view: Mat4,
+}
+-------------------------------------------------------------------------------------------
+layout(binding = 0) uniform UboViewProjection {
+    mat4 projection;
+    mat4 view;
+} vp;
+-------------------------------------------------------------------------------------------
+gl_Position = vp.projection * vp.view * mat4(1.0) * vec4(position, 1.0);
+
 -------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------
-4. Rename the regular uniform buffer object to UboViewProjection to indicate that the only data in there is the constant data.
+4. Create a uniform buffer object (UboModel) for the per model data that'll be stored in the dynamic buffer.
 -------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------
