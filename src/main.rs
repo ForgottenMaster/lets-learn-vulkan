@@ -150,6 +150,9 @@ struct UboViewProjection {
     view: Mat4,
 }
 
+#[repr(C)]
+struct UboModel(Mat4);
+
 struct Mesh {
     vertex_buffer: Buffer,
     vertex_buffer_memory: DeviceMemory,
