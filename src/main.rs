@@ -36,7 +36,7 @@ use {
     ash_window::enumerate_required_extensions,
     glam::{Mat4, Vec3},
     raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle},
-    std::{cmp, collections::HashSet, ffi::CStr, mem, ptr, time::Instant},
+    std::{alloc::Layout, cmp, collections::HashSet, ffi::CStr, mem, ptr, time::Instant},
     winit::{
         dpi::{PhysicalSize, Size},
         event::{Event, WindowEvent},
@@ -300,6 +300,26 @@ fn main() -> Result<()> {
             &logical_device,
             physical_device,
             swapchain_images.len(),
+        )?;
+
+        const MAX_MODELS: u64 = 2;
+        let physical_device_properties =
+            unsafe { instance.get_physical_device_properties(physical_device) };
+        let minimum_uniform_buffer_offset_alignment = physical_device_properties
+            .limits
+            .min_uniform_buffer_offset_alignment;
+        let ubo_model_aligned_size = Layout::new::<UboModel>()
+            .align_to(minimum_uniform_buffer_offset_alignment as usize)
+            .context("Could not pad UboModel to minimum offset alignment.")?
+            .pad_to_align()
+            .size();
+        let model_uniform_buffers = create_model_uniform_buffers(
+            &instance,
+            &logical_device,
+            physical_device,
+            swapchain_images.len(),
+            MAX_MODELS,
+            ubo_model_aligned_size as u64,
         )?;
 
         // descriptors.
@@ -701,6 +721,31 @@ fn create_vp_uniform_buffers(
                 BufferUsageFlags::UNIFORM_BUFFER,
                 MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
                 mem::size_of::<UboViewProjection>().try_into().unwrap(),
+            )
+            .context("Failed to create a uniform buffer.")?,
+        );
+    }
+    Ok(buffers)
+}
+
+fn create_model_uniform_buffers(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    count: usize,
+    max_models: u64,
+    model_stride: u64,
+) -> Result<Vec<(Buffer, DeviceMemory)>> {
+    let mut buffers = Vec::with_capacity(count);
+    for _ in 0..count {
+        buffers.push(
+            create_buffer(
+                instance,
+                device,
+                physical_device,
+                BufferUsageFlags::UNIFORM_BUFFER,
+                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                max_models * model_stride,
             )
             .context("Failed to create a uniform buffer.")?,
         );
