@@ -290,10 +290,10 @@ let model_uniform_buffers = create_model_uniform_buffers(
 	- Descriptor type is uniform buffer dynamic.
 -------------------------------------------------------------------------------------------
 *DescriptorSetLayoutBinding::builder()
-.binding(1)
-.descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-.descriptor_count(1)
-.stage_flags(ShaderStageFlags::VERTEX)
+    .binding(1)
+    .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+    .descriptor_count(1)
+    .stage_flags(ShaderStageFlags::VERTEX)
 
 
 
@@ -309,6 +309,10 @@ let model_uniform_buffers = create_model_uniform_buffers(
 9. Descriptor pool needs changing to add a new pool size.
 	- Pool size type needs to be uniform buffer dynamic.
 	- Change max sets to swap chain images size.
+------------------------------------------------------------------------
+*DescriptorPoolSize::builder()
+                            .ty(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                            .descriptor_count(count)
 
 
 
@@ -321,7 +325,60 @@ let model_uniform_buffers = create_model_uniform_buffers(
 10. Update creation of descriptor sets to include the creation of the model dynamic buffers.
 	- Range is size of a single piece of data.
 	- Descriptor type is uniform buffer dynamic.
+---------------------------------------------------------------------------------------------
+fn update_descriptor_sets(
+    device: &Device,
+    vp_buffers: &[(Buffer, DeviceMemory)],
+    model_buffers: &[(Buffer, DeviceMemory)],
+    model_buffer_stride: DeviceSize,
+    sets: &[DescriptorSet],
+) {
+    let vp_buffer_infos = vp_buffers
+        .iter()
+        .map(|(buffer, _)| {
+            vec![*DescriptorBufferInfo::builder()
+                .buffer(*buffer)
+                .range(mem::size_of::<UboViewProjection>().try_into().unwrap())]
+        })
+        .collect::<Vec<_>>();
 
+    let model_buffer_infos = model_buffers
+        .iter()
+        .map(|(buffer, _)| {
+            vec![*DescriptorBufferInfo::builder()
+                .buffer(*buffer)
+                .range(model_buffer_stride)]
+        })
+        .collect::<Vec<_>>();
+
+    let mut writes = vp_buffer_infos
+        .iter()
+        .zip(sets)
+        .map(|(buffer_info, set)| {
+            *WriteDescriptorSet::builder()
+                .dst_set(*set)
+                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(buffer_info)
+        })
+        .collect::<Vec<_>>();
+
+    writes.extend(
+        model_buffer_infos
+            .iter()
+            .zip(sets)
+            .map(|(buffer_info, set)| {
+                *WriteDescriptorSet::builder()
+                    .dst_set(*set)
+                    .dst_binding(1)
+                    .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                    .buffer_info(buffer_info)
+            }),
+    );
+
+    unsafe {
+        device.update_descriptor_sets(&writes, &[]);
+    }
+}
 
 
 

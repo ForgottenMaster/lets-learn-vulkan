@@ -331,7 +331,13 @@ fn main() -> Result<()> {
             descriptor_set_layout,
             vp_uniform_buffers.len(),
         )?;
-        update_descriptor_sets(&logical_device, &vp_uniform_buffers, &descriptor_sets);
+        update_descriptor_sets(
+            &logical_device,
+            &vp_uniform_buffers,
+            &model_uniform_buffers,
+            ubo_model_aligned_size as u64,
+            &descriptor_sets,
+        );
 
         // record into the command buffers.
         record_command_buffers(
@@ -466,9 +472,14 @@ fn create_descriptor_pool(device: &Device, count: u32) -> Result<DescriptorPool>
             .create_descriptor_pool(
                 &DescriptorPoolCreateInfo::builder()
                     .max_sets(count)
-                    .pool_sizes(&[*DescriptorPoolSize::builder()
-                        .ty(DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(count)]),
+                    .pool_sizes(&[
+                        *DescriptorPoolSize::builder()
+                            .ty(DescriptorType::UNIFORM_BUFFER)
+                            .descriptor_count(count),
+                        *DescriptorPoolSize::builder()
+                            .ty(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                            .descriptor_count(count),
+                    ]),
                 None,
             )
             .context("Failed to create a descriptor pool.")
@@ -497,10 +508,12 @@ fn allocate_descriptor_sets(
 
 fn update_descriptor_sets(
     device: &Device,
-    buffers: &[(Buffer, DeviceMemory)],
+    vp_buffers: &[(Buffer, DeviceMemory)],
+    model_buffers: &[(Buffer, DeviceMemory)],
+    model_buffer_stride: DeviceSize,
     sets: &[DescriptorSet],
 ) {
-    let buffer_infos = buffers
+    let vp_buffer_infos = vp_buffers
         .iter()
         .map(|(buffer, _)| {
             vec![*DescriptorBufferInfo::builder()
@@ -509,7 +522,16 @@ fn update_descriptor_sets(
         })
         .collect::<Vec<_>>();
 
-    let writes = buffer_infos
+    let model_buffer_infos = model_buffers
+        .iter()
+        .map(|(buffer, _)| {
+            vec![*DescriptorBufferInfo::builder()
+                .buffer(*buffer)
+                .range(model_buffer_stride)]
+        })
+        .collect::<Vec<_>>();
+
+    let mut writes = vp_buffer_infos
         .iter()
         .zip(sets)
         .map(|(buffer_info, set)| {
@@ -519,6 +541,19 @@ fn update_descriptor_sets(
                 .buffer_info(buffer_info)
         })
         .collect::<Vec<_>>();
+
+    writes.extend(
+        model_buffer_infos
+            .iter()
+            .zip(sets)
+            .map(|(buffer_info, set)| {
+                *WriteDescriptorSet::builder()
+                    .dst_set(*set)
+                    .dst_binding(1)
+                    .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                    .buffer_info(buffer_info)
+            }),
+    );
 
     unsafe {
         device.update_descriptor_sets(&writes, &[]);
