@@ -288,18 +288,14 @@ let model_uniform_buffers = create_model_uniform_buffers(
 7. Create a second binding in the descriptor set layout
 	- Binding number is 1.
 	- Descriptor type is uniform buffer dynamic.
-
-
-
-
-
-
-
-
 -------------------------------------------------------------------------------------------
--------------------------------------------------------------------------------------------
--------------------------------------------------------------------------------------------
-8. Create second uniform buffer for the dynamic ubo buffer.
+*DescriptorSetLayoutBinding::builder()
+.binding(1)
+.descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+.descriptor_count(1)
+.stage_flags(ShaderStageFlags::VERTEX)
+
+
 
 
 

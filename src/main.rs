@@ -448,6 +448,11 @@ fn create_descriptor_set_layout(device: &Device) -> Result<DescriptorSetLayout> 
                         .descriptor_type(DescriptorType::UNIFORM_BUFFER)
                         .descriptor_count(1)
                         .stage_flags(ShaderStageFlags::VERTEX),
+                    *DescriptorSetLayoutBinding::builder()
+                        .binding(1)
+                        .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
+                        .descriptor_count(1)
+                        .stage_flags(ShaderStageFlags::VERTEX),
                 ]),
                 None,
             )
