@@ -350,6 +350,7 @@ fn main() -> Result<()> {
             &meshes,
             &descriptor_sets,
             pipeline_layout,
+            ubo_model_aligned_size as u32,
         )?;
 
         // create semaphores and fences for the number of frames we're aiming at
@@ -393,6 +394,7 @@ fn main() -> Result<()> {
             queue_submit_complete_fences,
             meshes,
             vp_uniform_buffers,
+            model_uniform_buffers,
             descriptor_pool,
             descriptor_set_layout,
         );
@@ -937,6 +939,7 @@ fn record_command_buffers(
     meshes: &[Mesh],
     descriptor_sets: &[DescriptorSet],
     pipeline_layout: PipelineLayout,
+    model_ubo_stride: u32,
 ) -> Result<()> {
     for ((command_buffer, framebuffer), descriptor_set) in command_buffers
         .iter()
@@ -971,23 +974,23 @@ fn record_command_buffers(
                 PipelineBindPoint::GRAPHICS,
                 graphics_pipeline,
             );
-            device.cmd_bind_descriptor_sets(
-                *command_buffer,
-                PipelineBindPoint::GRAPHICS,
-                pipeline_layout,
-                0,
-                &[*descriptor_set],
-                &[],
-            );
 
             // draw all the meshes
-            for mesh in meshes {
+            for (mesh_index, mesh) in meshes.into_iter().enumerate() {
                 device.cmd_bind_vertex_buffers(*command_buffer, 0, &[mesh.vertex_buffer], &[0]);
                 device.cmd_bind_index_buffer(
                     *command_buffer,
                     mesh.index_buffer,
                     0,
                     IndexType::UINT16,
+                );
+                device.cmd_bind_descriptor_sets(
+                    *command_buffer,
+                    PipelineBindPoint::GRAPHICS,
+                    pipeline_layout,
+                    0,
+                    &[*descriptor_set],
+                    &[model_ubo_stride * mesh_index as u32],
                 );
                 device.cmd_draw_indexed(
                     *command_buffer,
@@ -1709,6 +1712,7 @@ fn cleanup(
     queue_submit_complete_fences: Vec<Fence>,
     meshes: Vec<Mesh>,
     uniform_buffers: Vec<(Buffer, DeviceMemory)>,
+    model_uniform_buffers: Vec<(Buffer, DeviceMemory)>,
     descriptor_pool: DescriptorPool,
     descriptor_set_layout: DescriptorSetLayout,
 ) {
@@ -1717,6 +1721,10 @@ fn cleanup(
         device.destroy_descriptor_pool(descriptor_pool, None);
         device.destroy_descriptor_set_layout(descriptor_set_layout, None);
         for (buffer, memory) in uniform_buffers {
+            device.free_memory(memory, None);
+            device.destroy_buffer(buffer, None);
+        }
+        for (buffer, memory) in model_uniform_buffers {
             device.free_memory(memory, None);
             device.destroy_buffer(buffer, None);
         }

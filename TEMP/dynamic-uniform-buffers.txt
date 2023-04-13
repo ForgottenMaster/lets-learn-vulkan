@@ -393,9 +393,32 @@ fn update_descriptor_sets(
 11. Update recording of commands/command buffer.
 	- When we're looping through meshes and binding index/vertex buffers, dynamic offset is the size of a single one multiplied by the mesh index.
 	- Actually pass dynamic offset through to the vkCmdBindDescriptorSets call.
-
-
-
+------------------------------------------------------------------------------------------
+for (mesh_index, mesh) in meshes.into_iter().enumerate() {
+    device.cmd_bind_vertex_buffers(*command_buffer, 0, &[mesh.vertex_buffer], &[0]);
+    device.cmd_bind_index_buffer(
+        *command_buffer,
+        mesh.index_buffer,
+        0,
+        IndexType::UINT16,
+    );
+    device.cmd_bind_descriptor_sets(
+        *command_buffer,
+        PipelineBindPoint::GRAPHICS,
+        pipeline_layout,
+        0,
+        &[*descriptor_set],
+        &[model_ubo_stride * mesh_index as u32],
+    );
+    device.cmd_draw_indexed(
+        *command_buffer,
+        mesh.index_count.try_into().unwrap(),
+        1,
+        0,
+        0,
+        0,
+    );
+}
 
 
 
