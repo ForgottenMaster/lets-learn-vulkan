@@ -449,7 +449,21 @@ struct Mesh {
         ubo_model: UboModel(Mat4::IDENTITY),
     })
 ----------------------------------------------------------------------------------------
-
+    let model_uniform_memory = model_uniform_buffers[image_index as usize].1;
+    let dst = device
+        .map_memory(
+            model_uniform_memory,
+            0,
+            ubo_model_stride * meshes.len() as DeviceSize,
+            MemoryMapFlags::empty(),
+        )
+        .context("Failed to map model uniform buffer memory.")? as *mut u8;
+    for (mesh_index, mesh) in meshes.into_iter().enumerate() {
+        let src = &mesh.ubo_model as *const UboModel;
+        let dst = dst.add(ubo_model_stride as usize * mesh_index) as *mut UboModel;
+        ptr::copy_nonoverlapping(src, dst, 1);
+    }
+    device.unmap_memory(model_uniform_memory);
 
 
 
@@ -462,3 +476,10 @@ struct Mesh {
 -------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------
 13. Add a mesh-specific rotation to show only one mesh rotating.
+-------------------------------------------------------------------------------------------
+let timestamp = Instant::now();
+let elapsed = timestamp.duration_since(last_frame_timestamp).as_secs_f32();
+meshes[0].ubo_model.0 *= Mat4::from_rotation_z(90.0_f32.to_radians() * elapsed);
+meshes[1].ubo_model.0 *= Mat4::from_rotation_z(-90.0_f32.to_radians() * elapsed);
+last_frame_timestamp = timestamp;
+window.request_redraw();

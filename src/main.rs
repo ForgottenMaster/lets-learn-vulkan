@@ -877,12 +877,11 @@ fn draw(
                 MemoryMapFlags::empty(),
             )
             .context("Failed to map model uniform buffer memory.")? as *mut u8;
-        for (mesh_index, mesh) in meshes.into_iter().enumerate() {
+        for (mesh_index, mesh) in meshes.iter().enumerate() {
             let src = &mesh.ubo_model as *const UboModel;
             let dst = dst.add(ubo_model_stride as usize * mesh_index) as *mut UboModel;
             ptr::copy_nonoverlapping(src, dst, 1);
         }
-        // update model matrices here
         device.unmap_memory(model_uniform_memory);
 
         // submit correct command buffer to the graphics queue.
@@ -1002,7 +1001,7 @@ fn record_command_buffers(
             );
 
             // draw all the meshes
-            for (mesh_index, mesh) in meshes.into_iter().enumerate() {
+            for (mesh_index, mesh) in meshes.iter().enumerate() {
                 device.cmd_bind_vertex_buffers(*command_buffer, 0, &[mesh.vertex_buffer], &[0]);
                 device.cmd_bind_index_buffer(
                     *command_buffer,
@@ -1398,8 +1397,9 @@ fn run_event_loop(
             } if window_id == window.id() => *control_flow = ControlFlow::Exit,
             Event::MainEventsCleared => {
                 let timestamp = Instant::now();
-                let _elapsed = timestamp.duration_since(last_frame_timestamp).as_secs_f32();
-                // update model matrices here
+                let elapsed = timestamp.duration_since(last_frame_timestamp).as_secs_f32();
+                meshes[0].ubo_model.0 *= Mat4::from_rotation_z(90.0_f32.to_radians() * elapsed);
+                meshes[1].ubo_model.0 *= Mat4::from_rotation_z(-90.0_f32.to_radians() * elapsed);
                 last_frame_timestamp = timestamp;
                 window.request_redraw();
             }
