@@ -430,7 +430,25 @@ for (mesh_index, mesh) in meshes.into_iter().enumerate() {
 	- For model buffer, should copy data to the aligned memory transfer space allocation.
 	- Write the model data to the correct location in memory.
 	- Can then copy the whole transfer space over to buffer memory.
-
+---------------------------------------------------------------------------------------
+struct Mesh {
+    vertex_buffer: Buffer,
+    vertex_buffer_memory: DeviceMemory,
+    index_buffer: Buffer,
+    index_buffer_memory: DeviceMemory,
+    index_count: usize,
+    ubo_model: UboModel,
+}
+----------------------------------------------------------------------------------------
+    Ok(Mesh {
+        vertex_buffer,
+        vertex_buffer_memory,
+        index_buffer,
+        index_buffer_memory,
+        index_count: index_buffer_data.len(),
+        ubo_model: UboModel(Mat4::IDENTITY),
+    })
+----------------------------------------------------------------------------------------
 
 
 

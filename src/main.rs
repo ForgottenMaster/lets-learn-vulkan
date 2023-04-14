@@ -159,6 +159,7 @@ struct Mesh {
     index_buffer: Buffer,
     index_buffer_memory: DeviceMemory,
     index_count: usize,
+    ubo_model: UboModel,
 }
 
 fn main() -> Result<()> {
@@ -239,7 +240,7 @@ fn main() -> Result<()> {
         )?;
 
         // create meshes
-        let meshes = vec![
+        let mut meshes = vec![
             create_mesh(
                 &instance,
                 &logical_device,
@@ -374,6 +375,9 @@ fn main() -> Result<()> {
             queues.presentation_queue,
             &command_buffers,
             &vp_uniform_buffers,
+            &model_uniform_buffers,
+            &mut meshes,
+            ubo_model_aligned_size as DeviceSize,
         );
         cleanup(
             instance,
@@ -443,6 +447,7 @@ fn create_mesh(
         index_buffer,
         index_buffer_memory,
         index_count: index_buffer_data.len(),
+        ubo_model: UboModel(Mat4::IDENTITY),
     })
 }
 
@@ -823,7 +828,10 @@ fn draw(
     present_queue: Queue,
     command_buffers: &[CommandBuffer],
     vp_uniform_buffers: &[(Buffer, DeviceMemory)],
+    model_uniform_buffers: &[(Buffer, DeviceMemory)],
     vp: &UboViewProjection,
+    meshes: &[Mesh],
+    ubo_model_stride: DeviceSize,
 ) -> Result<()> {
     // wait on the fence being ready from the previou submit and reset after proceeding.
     unsafe {
@@ -858,6 +866,24 @@ fn draw(
         let src = vp as *const UboViewProjection;
         ptr::copy_nonoverlapping(src, dst, 1);
         device.unmap_memory(vp_uniform_memory);
+
+        // update all the mesh model matrices in the appropriate model uniform buffer.
+        let model_uniform_memory = model_uniform_buffers[image_index as usize].1;
+        let dst = device
+            .map_memory(
+                model_uniform_memory,
+                0,
+                ubo_model_stride * meshes.len() as DeviceSize,
+                MemoryMapFlags::empty(),
+            )
+            .context("Failed to map model uniform buffer memory.")? as *mut u8;
+        for (mesh_index, mesh) in meshes.into_iter().enumerate() {
+            let src = &mesh.ubo_model as *const UboModel;
+            let dst = dst.add(ubo_model_stride as usize * mesh_index) as *mut UboModel;
+            ptr::copy_nonoverlapping(src, dst, 1);
+        }
+        // update model matrices here
+        device.unmap_memory(model_uniform_memory);
 
         // submit correct command buffer to the graphics queue.
         let wait_semaphores = [image_available_semaphore];
@@ -1344,6 +1370,9 @@ fn run_event_loop(
     present_queue: Queue,
     command_buffers: &[CommandBuffer],
     vp_uniform_buffers: &[(Buffer, DeviceMemory)],
+    model_uniform_buffers: &[(Buffer, DeviceMemory)],
+    meshes: &mut [Mesh],
+    ubo_model_stride: DeviceSize,
 ) -> i32 {
     let PhysicalSize { width, height } = window.inner_size();
     let aspect = width as f32 / height as f32;
@@ -1386,7 +1415,10 @@ fn run_event_loop(
                     present_queue,
                     command_buffers,
                     vp_uniform_buffers,
+                    model_uniform_buffers,
                     &vp,
+                    meshes,
+                    ubo_model_stride,
                 )
                 .unwrap();
                 current_frame = (current_frame + 1) % max_frames;
