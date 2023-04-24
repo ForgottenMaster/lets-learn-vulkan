@@ -8,22 +8,23 @@ use {
             AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCopy, BufferCreateInfo,
             BufferUsageFlags, ClearColorValue, ClearValue, ColorComponentFlags, ColorSpaceKHR,
             CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
-            CommandBufferUsageFlags, CommandPool, CommandPoolCreateInfo, ComponentMapping,
-            ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DescriptorBufferInfo,
-            DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet,
-            DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
-            DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Extent2D,
-            Fence, FenceCreateFlags, FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo,
-            FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout,
-            ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-            IndexType, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
-            PhysicalDevice, PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint,
-            PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
+            ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
+            DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
+            DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
+            DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
+            DeviceMemory, DeviceSize, Extent2D, Fence, FenceCreateFlags, FenceCreateInfo, Format,
+            Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image,
+            ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
+            ImageViewCreateInfo, ImageViewType, IndexType, MemoryAllocateInfo, MemoryMapFlags,
+            MemoryPropertyFlags, MemoryRequirements, PhysicalDevice,
+            PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint, PipelineCache,
+            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
             PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
             PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
             PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
             PipelineViewportStateCreateInfo, PolygonMode, PresentInfoKHR, PresentModeKHR,
-            PrimitiveTopology, Queue, Rect2D, RenderPass, RenderPassBeginInfo,
+            PrimitiveTopology, PushConstantRange, Queue, Rect2D, RenderPass, RenderPassBeginInfo,
             RenderPassCreateInfo, SampleCountFlags, Semaphore, SemaphoreCreateInfo, ShaderModule,
             ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubmitInfo, SubpassContents,
             SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
@@ -36,7 +37,7 @@ use {
     ash_window::enumerate_required_extensions,
     glam::{Mat4, Vec3},
     raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle},
-    std::{alloc::Layout, cmp, collections::HashSet, ffi::CStr, mem, ptr, time::Instant},
+    std::{cmp, collections::HashSet, ffi::CStr, mem, ptr, time::Instant},
     winit::{
         dpi::{PhysicalSize, Size},
         event::{Event, WindowEvent},
@@ -151,7 +152,7 @@ struct UboViewProjection {
 }
 
 #[repr(C)]
-struct UboModel(Mat4);
+struct PushModel(Mat4);
 
 struct Mesh {
     vertex_buffer: Buffer,
@@ -159,7 +160,7 @@ struct Mesh {
     index_buffer: Buffer,
     index_buffer_memory: DeviceMemory,
     index_count: usize,
-    ubo_model: UboModel,
+    push_model: PushModel,
 }
 
 fn main() -> Result<()> {
@@ -303,26 +304,6 @@ fn main() -> Result<()> {
             swapchain_images.len(),
         )?;
 
-        const MAX_MODELS: u64 = 2;
-        let physical_device_properties =
-            unsafe { instance.get_physical_device_properties(physical_device) };
-        let minimum_uniform_buffer_offset_alignment = physical_device_properties
-            .limits
-            .min_uniform_buffer_offset_alignment;
-        let ubo_model_aligned_size = Layout::new::<UboModel>()
-            .align_to(minimum_uniform_buffer_offset_alignment as usize)
-            .context("Could not pad UboModel to minimum offset alignment.")?
-            .pad_to_align()
-            .size();
-        let model_uniform_buffers = create_model_uniform_buffers(
-            &instance,
-            &logical_device,
-            physical_device,
-            swapchain_images.len(),
-            MAX_MODELS,
-            ubo_model_aligned_size as u64,
-        )?;
-
         // descriptors.
         let descriptor_pool =
             create_descriptor_pool(&logical_device, vp_uniform_buffers.len() as u32)?;
@@ -332,27 +313,7 @@ fn main() -> Result<()> {
             descriptor_set_layout,
             vp_uniform_buffers.len(),
         )?;
-        update_descriptor_sets(
-            &logical_device,
-            &vp_uniform_buffers,
-            &model_uniform_buffers,
-            ubo_model_aligned_size as u64,
-            &descriptor_sets,
-        );
-
-        // record into the command buffers.
-        record_command_buffers(
-            &logical_device,
-            &command_buffers,
-            &framebuffers,
-            render_pass,
-            swapchain_extent,
-            graphics_pipeline,
-            &meshes,
-            &descriptor_sets,
-            pipeline_layout,
-            ubo_model_aligned_size as u32,
-        )?;
+        update_descriptor_sets(&logical_device, &vp_uniform_buffers, &descriptor_sets);
 
         // create semaphores and fences for the number of frames we're aiming at
         // defined by MAX_FRAMES constant.
@@ -375,9 +336,13 @@ fn main() -> Result<()> {
             queues.presentation_queue,
             &command_buffers,
             &vp_uniform_buffers,
-            &model_uniform_buffers,
             &mut meshes,
-            ubo_model_aligned_size as DeviceSize,
+            pipeline_layout,
+            &framebuffers,
+            render_pass,
+            swapchain_extent,
+            graphics_pipeline,
+            &descriptor_sets,
         );
         cleanup(
             instance,
@@ -398,7 +363,6 @@ fn main() -> Result<()> {
             queue_submit_complete_fences,
             meshes,
             vp_uniform_buffers,
-            model_uniform_buffers,
             descriptor_pool,
             descriptor_set_layout,
         );
@@ -447,7 +411,7 @@ fn create_mesh(
         index_buffer,
         index_buffer_memory,
         index_count: index_buffer_data.len(),
-        ubo_model: UboModel(Mat4::IDENTITY),
+        push_model: PushModel(Mat4::IDENTITY),
     })
 }
 
@@ -459,11 +423,6 @@ fn create_descriptor_set_layout(device: &Device) -> Result<DescriptorSetLayout> 
                 &DescriptorSetLayoutCreateInfo::builder().bindings(&[
                     *DescriptorSetLayoutBinding::builder()
                         .descriptor_type(DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(ShaderStageFlags::VERTEX),
-                    *DescriptorSetLayoutBinding::builder()
-                        .binding(1)
-                        .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
                         .descriptor_count(1)
                         .stage_flags(ShaderStageFlags::VERTEX),
                 ]),
@@ -479,14 +438,9 @@ fn create_descriptor_pool(device: &Device, count: u32) -> Result<DescriptorPool>
             .create_descriptor_pool(
                 &DescriptorPoolCreateInfo::builder()
                     .max_sets(count)
-                    .pool_sizes(&[
-                        *DescriptorPoolSize::builder()
-                            .ty(DescriptorType::UNIFORM_BUFFER)
-                            .descriptor_count(count),
-                        *DescriptorPoolSize::builder()
-                            .ty(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                            .descriptor_count(count),
-                    ]),
+                    .pool_sizes(&[*DescriptorPoolSize::builder()
+                        .ty(DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(count)]),
                 None,
             )
             .context("Failed to create a descriptor pool.")
@@ -516,8 +470,6 @@ fn allocate_descriptor_sets(
 fn update_descriptor_sets(
     device: &Device,
     vp_buffers: &[(Buffer, DeviceMemory)],
-    model_buffers: &[(Buffer, DeviceMemory)],
-    model_buffer_stride: DeviceSize,
     sets: &[DescriptorSet],
 ) {
     let vp_buffer_infos = vp_buffers
@@ -529,16 +481,7 @@ fn update_descriptor_sets(
         })
         .collect::<Vec<_>>();
 
-    let model_buffer_infos = model_buffers
-        .iter()
-        .map(|(buffer, _)| {
-            vec![*DescriptorBufferInfo::builder()
-                .buffer(*buffer)
-                .range(model_buffer_stride)]
-        })
-        .collect::<Vec<_>>();
-
-    let mut writes = vp_buffer_infos
+    let writes = vp_buffer_infos
         .iter()
         .zip(sets)
         .map(|(buffer_info, set)| {
@@ -548,19 +491,6 @@ fn update_descriptor_sets(
                 .buffer_info(buffer_info)
         })
         .collect::<Vec<_>>();
-
-    writes.extend(
-        model_buffer_infos
-            .iter()
-            .zip(sets)
-            .map(|(buffer_info, set)| {
-                *WriteDescriptorSet::builder()
-                    .dst_set(*set)
-                    .dst_binding(1)
-                    .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                    .buffer_info(buffer_info)
-            }),
-    );
 
     unsafe {
         device.update_descriptor_sets(&writes, &[]);
@@ -775,31 +705,6 @@ fn create_vp_uniform_buffers(
     Ok(buffers)
 }
 
-fn create_model_uniform_buffers(
-    instance: &Instance,
-    device: &Device,
-    physical_device: PhysicalDevice,
-    count: usize,
-    max_models: u64,
-    model_stride: u64,
-) -> Result<Vec<(Buffer, DeviceMemory)>> {
-    let mut buffers = Vec::with_capacity(count);
-    for _ in 0..count {
-        buffers.push(
-            create_buffer(
-                instance,
-                device,
-                physical_device,
-                BufferUsageFlags::UNIFORM_BUFFER,
-                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-                max_models * model_stride,
-            )
-            .context("Failed to create a uniform buffer.")?,
-        );
-    }
-    Ok(buffers)
-}
-
 fn find_valid_memory_type_index(
     memory_properties: PhysicalDeviceMemoryProperties,
     memory_requirements: MemoryRequirements,
@@ -828,10 +733,14 @@ fn draw(
     present_queue: Queue,
     command_buffers: &[CommandBuffer],
     vp_uniform_buffers: &[(Buffer, DeviceMemory)],
-    model_uniform_buffers: &[(Buffer, DeviceMemory)],
     vp: &UboViewProjection,
     meshes: &[Mesh],
-    ubo_model_stride: DeviceSize,
+    pipeline_layout: PipelineLayout,
+    framebuffers: &[Framebuffer],
+    render_pass: RenderPass,
+    swapchain_extent: Extent2D,
+    graphics_pipeline: Pipeline,
+    descriptor_sets: &[DescriptorSet],
 ) -> Result<()> {
     // wait on the fence being ready from the previou submit and reset after proceeding.
     unsafe {
@@ -852,6 +761,20 @@ fn draw(
             )
             .context("Failed to acquire next image while drawing.")?;
 
+        // record into the command buffers.
+        record_command_buffers(
+            device,
+            command_buffers,
+            framebuffers,
+            render_pass,
+            swapchain_extent,
+            graphics_pipeline,
+            meshes,
+            descriptor_sets,
+            pipeline_layout,
+            image_index as usize,
+        )?;
+
         // update the uniform buffer with the VP.
         let vp_uniform_memory = vp_uniform_buffers[image_index as usize].1;
         let dst = device
@@ -866,23 +789,6 @@ fn draw(
         let src = vp as *const UboViewProjection;
         ptr::copy_nonoverlapping(src, dst, 1);
         device.unmap_memory(vp_uniform_memory);
-
-        // update all the mesh model matrices in the appropriate model uniform buffer.
-        let model_uniform_memory = model_uniform_buffers[image_index as usize].1;
-        let dst = device
-            .map_memory(
-                model_uniform_memory,
-                0,
-                ubo_model_stride * meshes.len() as DeviceSize,
-                MemoryMapFlags::empty(),
-            )
-            .context("Failed to map model uniform buffer memory.")? as *mut u8;
-        for (mesh_index, mesh) in meshes.iter().enumerate() {
-            let src = &mesh.ubo_model as *const UboModel;
-            let dst = dst.add(ubo_model_stride as usize * mesh_index) as *mut UboModel;
-            ptr::copy_nonoverlapping(src, dst, 1);
-        }
-        device.unmap_memory(model_uniform_memory);
 
         // submit correct command buffer to the graphics queue.
         let wait_semaphores = [image_available_semaphore];
@@ -964,77 +870,82 @@ fn record_command_buffers(
     meshes: &[Mesh],
     descriptor_sets: &[DescriptorSet],
     pipeline_layout: PipelineLayout,
-    model_ubo_stride: u32,
+    image_index: usize,
 ) -> Result<()> {
-    for ((command_buffer, framebuffer), descriptor_set) in command_buffers
-        .iter()
-        .zip(framebuffers)
-        .zip(descriptor_sets)
-    {
-        unsafe {
-            // begin command buffer
-            device
-                .begin_command_buffer(*command_buffer, &CommandBufferBeginInfo::builder())
-                .context("Failed to begin command buffer.")?;
+    let command_buffer = command_buffers[image_index];
+    let framebuffer = framebuffers[image_index];
+    let descriptor_set = descriptor_sets[image_index];
 
-            // begin render pass
-            let clear_values = [ClearValue {
-                color: ClearColorValue {
-                    float32: [0.6, 0.65, 0.4, 1.0],
-                },
-            }];
-            device.cmd_begin_render_pass(
-                *command_buffer,
-                &RenderPassBeginInfo::builder()
-                    .render_pass(render_pass)
-                    .framebuffer(*framebuffer)
-                    .render_area(*Rect2D::builder().extent(swapchain_extent))
-                    .clear_values(&clear_values),
-                SubpassContents::INLINE,
-            );
+    unsafe {
+        // begin command buffer
+        device
+            .begin_command_buffer(command_buffer, &CommandBufferBeginInfo::builder())
+            .context("Failed to begin command buffer.")?;
 
-            // bind pipeline
-            device.cmd_bind_pipeline(
-                *command_buffer,
+        // begin render pass
+        let clear_values = [ClearValue {
+            color: ClearColorValue {
+                float32: [0.6, 0.65, 0.4, 1.0],
+            },
+        }];
+        device.cmd_begin_render_pass(
+            command_buffer,
+            &RenderPassBeginInfo::builder()
+                .render_pass(render_pass)
+                .framebuffer(framebuffer)
+                .render_area(*Rect2D::builder().extent(swapchain_extent))
+                .clear_values(&clear_values),
+            SubpassContents::INLINE,
+        );
+
+        // bind pipeline
+        device.cmd_bind_pipeline(
+            command_buffer,
+            PipelineBindPoint::GRAPHICS,
+            graphics_pipeline,
+        );
+
+        // draw all the meshes
+        for mesh in meshes.iter() {
+            device.cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.vertex_buffer], &[0]);
+            device.cmd_bind_index_buffer(command_buffer, mesh.index_buffer, 0, IndexType::UINT16);
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
                 PipelineBindPoint::GRAPHICS,
-                graphics_pipeline,
+                pipeline_layout,
+                0,
+                &[descriptor_set],
+                &[],
             );
-
-            // draw all the meshes
-            for (mesh_index, mesh) in meshes.iter().enumerate() {
-                device.cmd_bind_vertex_buffers(*command_buffer, 0, &[mesh.vertex_buffer], &[0]);
-                device.cmd_bind_index_buffer(
-                    *command_buffer,
-                    mesh.index_buffer,
-                    0,
-                    IndexType::UINT16,
-                );
-                device.cmd_bind_descriptor_sets(
-                    *command_buffer,
-                    PipelineBindPoint::GRAPHICS,
-                    pipeline_layout,
-                    0,
-                    &[*descriptor_set],
-                    &[model_ubo_stride * mesh_index as u32],
-                );
-                device.cmd_draw_indexed(
-                    *command_buffer,
-                    mesh.index_count.try_into().unwrap(),
-                    1,
-                    0,
-                    0,
-                    0,
-                );
-            }
-
-            // end render pass
-            device.cmd_end_render_pass(*command_buffer);
-
-            // end command buffer
-            device
-                .end_command_buffer(*command_buffer)
-                .context("Failed to end command buffer.")?;
+            // get a u8 slice containing the bytes of the PushModel.
+            let push_constant_ptr = &mesh.push_model as *const PushModel as *const u8;
+            let push_constant_size = std::mem::size_of::<PushModel>();
+            let push_constant_bytes =
+                std::slice::from_raw_parts(push_constant_ptr, push_constant_size);
+            device.cmd_push_constants(
+                command_buffer,
+                pipeline_layout,
+                ShaderStageFlags::VERTEX,
+                0,
+                push_constant_bytes,
+            );
+            device.cmd_draw_indexed(
+                command_buffer,
+                mesh.index_count.try_into().unwrap(),
+                1,
+                0,
+                0,
+                0,
+            );
         }
+
+        // end render pass
+        device.cmd_end_render_pass(command_buffer);
+
+        // end command buffer
+        device
+            .end_command_buffer(command_buffer)
+            .context("Failed to end command buffer.")?;
     }
     Ok(())
 }
@@ -1060,7 +971,9 @@ fn create_command_pool(device: &Device, queue_family_index: u32) -> Result<Comma
     unsafe {
         device
             .create_command_pool(
-                &CommandPoolCreateInfo::builder().queue_family_index(queue_family_index),
+                &CommandPoolCreateInfo::builder()
+                    .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+                    .queue_family_index(queue_family_index),
                 None,
             )
             .context("Failed to create a command pool.")
@@ -1099,7 +1012,9 @@ fn create_pipeline_layout(
         device.create_pipeline_layout(
             &PipelineLayoutCreateInfo::builder()
                 .set_layouts(set_layouts)
-                .push_constant_ranges(&[]),
+                .push_constant_ranges(&[*PushConstantRange::builder()
+                    .stage_flags(ShaderStageFlags::VERTEX)
+                    .size(std::mem::size_of::<PushModel>() as u32)]),
             None,
         )
     }
@@ -1369,9 +1284,13 @@ fn run_event_loop(
     present_queue: Queue,
     command_buffers: &[CommandBuffer],
     vp_uniform_buffers: &[(Buffer, DeviceMemory)],
-    model_uniform_buffers: &[(Buffer, DeviceMemory)],
     meshes: &mut [Mesh],
-    ubo_model_stride: DeviceSize,
+    pipeline_layout: PipelineLayout,
+    framebuffers: &[Framebuffer],
+    render_pass: RenderPass,
+    swapchain_extent: Extent2D,
+    graphics_pipeline: Pipeline,
+    descriptor_sets: &[DescriptorSet],
 ) -> i32 {
     let PhysicalSize { width, height } = window.inner_size();
     let aspect = width as f32 / height as f32;
@@ -1398,8 +1317,8 @@ fn run_event_loop(
             Event::MainEventsCleared => {
                 let timestamp = Instant::now();
                 let elapsed = timestamp.duration_since(last_frame_timestamp).as_secs_f32();
-                meshes[0].ubo_model.0 *= Mat4::from_rotation_z(90.0_f32.to_radians() * elapsed);
-                meshes[1].ubo_model.0 *= Mat4::from_rotation_z(-90.0_f32.to_radians() * elapsed);
+                meshes[0].push_model.0 *= Mat4::from_rotation_z(90.0_f32.to_radians() * elapsed);
+                meshes[1].push_model.0 *= Mat4::from_rotation_z(-90.0_f32.to_radians() * elapsed);
                 last_frame_timestamp = timestamp;
                 window.request_redraw();
             }
@@ -1415,10 +1334,14 @@ fn run_event_loop(
                     present_queue,
                     command_buffers,
                     vp_uniform_buffers,
-                    model_uniform_buffers,
                     &vp,
                     meshes,
-                    ubo_model_stride,
+                    pipeline_layout,
+                    framebuffers,
+                    render_pass,
+                    swapchain_extent,
+                    graphics_pipeline,
+                    descriptor_sets,
                 )
                 .unwrap();
                 current_frame = (current_frame + 1) % max_frames;
@@ -1744,7 +1667,6 @@ fn cleanup(
     queue_submit_complete_fences: Vec<Fence>,
     meshes: Vec<Mesh>,
     uniform_buffers: Vec<(Buffer, DeviceMemory)>,
-    model_uniform_buffers: Vec<(Buffer, DeviceMemory)>,
     descriptor_pool: DescriptorPool,
     descriptor_set_layout: DescriptorSetLayout,
 ) {
@@ -1753,10 +1675,6 @@ fn cleanup(
         device.destroy_descriptor_pool(descriptor_pool, None);
         device.destroy_descriptor_set_layout(descriptor_set_layout, None);
         for (buffer, memory) in uniform_buffers {
-            device.free_memory(memory, None);
-            device.destroy_buffer(buffer, None);
-        }
-        for (buffer, memory) in model_uniform_buffers {
             device.free_memory(memory, None);
             device.destroy_buffer(buffer, None);
         }

@@ -8,7 +8,7 @@ layout(binding = 0) uniform UboViewProjection {
     mat4 view;
 } vp;
 
-layout(binding = 1) uniform UboModel {
+layout(push_constant) uniform PushModel {
     mat4 model;
 } m;
 
