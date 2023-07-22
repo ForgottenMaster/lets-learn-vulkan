@@ -1,3 +1,5 @@
+use ash::vk::{FormatFeatureFlags, ImageTiling};
+
 use {
     anyhow::{anyhow, Context, Error, Result},
     ash::{
@@ -13,13 +15,13 @@ use {
             DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
             DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
             DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
-            DeviceMemory, DeviceSize, Extent2D, Fence, FenceCreateFlags, FenceCreateInfo, Format,
-            Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image,
-            ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
-            ImageViewCreateInfo, ImageViewType, IndexType, MemoryAllocateInfo, MemoryMapFlags,
-            MemoryPropertyFlags, MemoryRequirements, PhysicalDevice,
-            PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint, PipelineCache,
-            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            DeviceMemory, DeviceSize, Extent2D, Extent3D, Fence, FenceCreateFlags, FenceCreateInfo,
+            Format, Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo,
+            Image, ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageSubresourceRange,
+            ImageType, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, IndexType,
+            MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
+            PhysicalDevice, PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint,
+            PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
             PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
             PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
             PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
@@ -196,6 +198,17 @@ fn main() -> Result<()> {
         let swapchain_images =
             get_swapchain_images(&swapchain_ext, swapchain, format, &logical_device)?;
 
+        // create depth buffer image
+        let (depth_buffer_image, depth_buffer_image_memory) = create_depth_buffer_image(
+            &instance,
+            &logical_device,
+            physical_device,
+            swapchain_extent.width,
+            swapchain_extent.height,
+            ImageTiling::OPTIMAL,
+        )
+        .context("Failed to create depth buffer.")?;
+
         // compile vertex and fragment shader modules from code.
         let vertex_shader = create_shader_module(&logical_device, shader_mapping["triangle.vert"])?;
         let fragment_shader =
@@ -349,8 +362,6 @@ fn main() -> Result<()> {
             logical_device,
             surface_ext,
             surface,
-            swapchain_ext,
-            swapchain,
             swapchain_images,
             &[vertex_shader, fragment_shader],
             pipeline_layout,
@@ -365,6 +376,8 @@ fn main() -> Result<()> {
             vp_uniform_buffers,
             descriptor_pool,
             descriptor_set_layout,
+            &[depth_buffer_image],
+            &[depth_buffer_image_memory],
         );
         if error_code == 0 {
             Ok(())
@@ -497,6 +510,116 @@ fn update_descriptor_sets(
     }
 }
 
+////////////////////////// Images ///////////////////////////////
+#[allow(clippy::too_many_arguments)]
+fn create_image(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    width: u32,
+    height: u32,
+    tiling: ImageTiling,
+    usage: ImageUsageFlags,
+    initial_layout: ImageLayout,
+    format: Format,
+    flags: MemoryPropertyFlags,
+) -> Result<(Image, DeviceMemory)> {
+    unsafe {
+        let image = device
+            .create_image(
+                &ImageCreateInfo::builder()
+                    .image_type(ImageType::TYPE_2D)
+                    .format(format)
+                    .extent(
+                        Extent3D::builder()
+                            .width(width)
+                            .height(height)
+                            .depth(1)
+                            .build(),
+                    )
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(SampleCountFlags::TYPE_1)
+                    .tiling(tiling)
+                    .usage(usage)
+                    .initial_layout(initial_layout)
+                    .sharing_mode(SharingMode::EXCLUSIVE),
+                None,
+            )
+            .context("Failed to create image.")?;
+        let memory_requirements = device.get_image_memory_requirements(image);
+        let memory_properties = instance.get_physical_device_memory_properties(physical_device);
+        let memory_index =
+            find_valid_memory_type_index(memory_properties, memory_requirements, flags)
+                .ok_or_else(|| anyhow!("Failed to find a valid memory index for image."))?;
+        let memory = device
+            .allocate_memory(
+                &MemoryAllocateInfo::builder()
+                    .allocation_size(memory_requirements.size)
+                    .memory_type_index(memory_index as u32),
+                None,
+            )
+            .context("Failed to allocate device memory for image.")?;
+        device
+            .bind_image_memory(image, memory, 0)
+            .context("Failed to bind image memory.")?;
+        Ok((image, memory))
+    }
+}
+
+fn create_depth_buffer_image(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    width: u32,
+    height: u32,
+    tiling: ImageTiling,
+) -> Result<(Image, DeviceMemory)> {
+    let format = get_best_image_format(
+        instance,
+        physical_device,
+        &[
+            Format::D32_SFLOAT_S8_UINT,
+            Format::D32_SFLOAT,
+            Format::D24_UNORM_S8_UINT,
+        ],
+        tiling,
+        FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
+    )
+    .ok_or_else(|| anyhow!("Failed to get a valid image format."))?;
+    create_image(
+        instance,
+        device,
+        physical_device,
+        width,
+        height,
+        tiling,
+        ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        ImageLayout::UNDEFINED,
+        format,
+        MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .context("Failed to create depth buffer image")
+}
+
+fn get_best_image_format(
+    instance: &Instance,
+    physical_device: PhysicalDevice,
+    formats: &[Format],
+    tiling: ImageTiling,
+    flags: FormatFeatureFlags,
+) -> Option<Format> {
+    formats.iter().copied().find(|format| {
+        let properties =
+            unsafe { instance.get_physical_device_format_properties(physical_device, *format) };
+        match tiling {
+            ImageTiling::OPTIMAL => properties.optimal_tiling_features.contains(flags),
+            ImageTiling::LINEAR => properties.linear_tiling_features.contains(flags),
+            _ => false,
+        }
+    })
+}
+
 ////////////////////////// Buffers //////////////////////////////
 fn create_buffer(
     instance: &Instance,
@@ -559,7 +682,7 @@ fn create_staged_buffer<T>(
     transfer_queue: Queue,
 ) -> Result<(Buffer, DeviceMemory)> {
     // determine the size needed
-    let size = (mem::size_of::<T>() * elements.len()) as DeviceSize;
+    let size = mem::size_of_val(elements) as DeviceSize;
 
     // create the GPU buffer and CPU buffer
     let (staging_buffer, staging_buffer_memory) = create_buffer(
@@ -1346,6 +1469,7 @@ fn run_event_loop(
                 .unwrap();
                 current_frame = (current_frame + 1) % max_frames;
             }
+            Event::LoopDestroyed => unsafe { swapchain_ext.destroy_swapchain(swapchain, None) },
             _ => (),
         }
     })
@@ -1653,8 +1777,6 @@ fn cleanup(
     device: Device,
     surface_ext: Surface,
     surface: SurfaceKHR,
-    swapchain_ext: Swapchain,
-    swapchain: SwapchainKHR,
     swapchain_images: Vec<SwapchainImage>,
     shader_modules: &[ShaderModule],
     pipeline_layout: PipelineLayout,
@@ -1669,6 +1791,8 @@ fn cleanup(
     uniform_buffers: Vec<(Buffer, DeviceMemory)>,
     descriptor_pool: DescriptorPool,
     descriptor_set_layout: DescriptorSetLayout,
+    images: &[Image],
+    device_memory: &[DeviceMemory],
 ) {
     unsafe {
         device.device_wait_idle().unwrap();
@@ -1706,7 +1830,12 @@ fn cleanup(
         for swapchain_image in swapchain_images {
             device.destroy_image_view(swapchain_image.image_view, None);
         }
-        swapchain_ext.destroy_swapchain(swapchain, None);
+        for image in images {
+            device.destroy_image(*image, None);
+        }
+        for device_memory in device_memory {
+            device.free_memory(*device_memory, None);
+        }
         device.destroy_device(None);
         surface_ext.destroy_surface(surface, None);
         instance.destroy_instance(None);
