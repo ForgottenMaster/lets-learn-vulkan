@@ -62,7 +62,7 @@ fn create_depth_buffer_image(
     width: u32,
     height: u32,
     tiling: ImageTiling,
-) -> Result<(Image, DeviceMemory)> {
+) -> Result<(Image, DeviceMemory, Format)> {
     let format = get_best_image_format(
         instance,
         physical_device,
@@ -75,7 +75,7 @@ fn create_depth_buffer_image(
         FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
     )
     .ok_or_else(|| anyhow!("Failed to get a valid image format."))?;
-    create_image(
+    let (image, memory) = create_image(
         instance,
         device,
         physical_device,
@@ -87,7 +87,8 @@ fn create_depth_buffer_image(
         format,
         MemoryPropertyFlags::DEVICE_LOCAL,
     )
-    .context("Failed to create depth buffer image")
+    .context("Failed to create depth buffer image")?;
+    Ok((image, memory, format))
 }
 
 ===========================================================================================================
@@ -112,15 +113,24 @@ fn get_best_image_format(
 
 ================================================================================================
 
-let (depth_buffer_image, depth_buffer_image_memory) = create_depth_buffer_image(
-            &instance,
-            &logical_device,
-            physical_device,
-            swapchain_extent.width,
-            swapchain_extent.height,
-            ImageTiling::OPTIMAL,
-        )
-        .context("Failed to create depth buffer.")?;
+let (depth_buffer_image, depth_buffer_image_memory, depth_buffer_format) =
+    create_depth_buffer_image(
+        &instance,
+        &logical_device,
+        physical_device,
+        swapchain_extent.width,
+        swapchain_extent.height,
+        ImageTiling::OPTIMAL,
+    )
+    .context("Failed to create depth buffer.")?;
+
+let depth_image_view = create_image_view(
+    depth_buffer_image,
+    depth_buffer_format,
+    ImageAspectFlags::DEPTH,
+    &logical_device,
+)
+.context("Failed to create an image view for the depth buffer.")?;
 
 ================================================================================================
 
@@ -130,9 +140,52 @@ Event::LoopDestroyed => unsafe { swapchain_ext.destroy_swapchain(swapchain, None
 
 ================================================================================================
 
-Also pass tiling and feature flags when choosing supported format
-Check tiling type and compare features against supported for that tiling type
-Add depth attachment to render pass
-Add depth attachment to framebuffer
-Add a depth stencil state to pipeline
-Clear values for depth attachment is just 1
+            AttachmentDescription::builder()
+                .format(depth_format)
+                .samples(SampleCountFlags::TYPE_1)
+                .load_op(AttachmentLoadOp::CLEAR)
+                .store_op(AttachmentStoreOp::DONT_CARE)
+                .stencil_load_op(AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(AttachmentStoreOp::DONT_CARE)
+                .initial_layout(ImageLayout::UNDEFINED)
+                .final_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+
+===============================================================================================
+
+let depth_attachment_reference = AttachmentReference::builder()
+    .attachment(1)
+    .layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+.depth_stencil_attachment(&depth_attachment_reference)
+
+=============================================================================================
+
+let attachments = [image_view, depth_image_view];
+
+====================================================================================
+
+    let depth_stencil_state = PipelineDepthStencilStateCreateInfo::builder()
+        .depth_test_enable(true)
+        .depth_write_enable(true)
+        .depth_compare_op(CompareOp::LESS_OR_EQUAL)
+        .depth_bounds_test_enable(false);
+
+===========================================================================================
+
+        let clear_values = [
+            ClearValue {
+                color: ClearColorValue {
+                    float32: [0.6, 0.65, 0.4, 1.0],
+                },
+            },
+            ClearValue {
+                depth_stencil: ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+        ];
+
+=======================================================================================
+
+                meshes[1].push_model.0 *= Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0) * elapsed);

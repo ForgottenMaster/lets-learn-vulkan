@@ -8,23 +8,25 @@ use {
         vk::{
             AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
             AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCopy, BufferCreateInfo,
-            BufferUsageFlags, ClearColorValue, ClearValue, ColorComponentFlags, ColorSpaceKHR,
-            CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
-            CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
-            ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
-            DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
-            DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
-            DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
-            DeviceMemory, DeviceSize, Extent2D, Extent3D, Fence, FenceCreateFlags, FenceCreateInfo,
-            Format, Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo,
-            Image, ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageSubresourceRange,
-            ImageType, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, IndexType,
-            MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
-            PhysicalDevice, PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint,
-            PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-            PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
-            PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
-            PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
+            BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue,
+            ColorComponentFlags, ColorSpaceKHR, CommandBuffer, CommandBufferAllocateInfo,
+            CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags, CommandPool,
+            CommandPoolCreateFlags, CommandPoolCreateInfo, CompareOp, ComponentMapping,
+            ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DescriptorBufferInfo,
+            DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet,
+            DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
+            DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Extent2D,
+            Extent3D, Fence, FenceCreateFlags, FenceCreateInfo, Format, Framebuffer,
+            FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags,
+            ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageType, ImageUsageFlags,
+            ImageView, ImageViewCreateInfo, ImageViewType, IndexType, MemoryAllocateInfo,
+            MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements, PhysicalDevice,
+            PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint, PipelineCache,
+            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            PipelineDepthStencilStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
+            PipelineLayout, PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
+            PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
+            PipelineStageFlags, PipelineVertexInputStateCreateInfo,
             PipelineViewportStateCreateInfo, PolygonMode, PresentInfoKHR, PresentModeKHR,
             PrimitiveTopology, PushConstantRange, Queue, Rect2D, RenderPass, RenderPassBeginInfo,
             RenderPassCreateInfo, SampleCountFlags, Semaphore, SemaphoreCreateInfo, ShaderModule,
@@ -199,15 +201,25 @@ fn main() -> Result<()> {
             get_swapchain_images(&swapchain_ext, swapchain, format, &logical_device)?;
 
         // create depth buffer image
-        let (depth_buffer_image, depth_buffer_image_memory) = create_depth_buffer_image(
-            &instance,
+        let (depth_buffer_image, depth_buffer_image_memory, depth_buffer_format) =
+            create_depth_buffer_image(
+                &instance,
+                &logical_device,
+                physical_device,
+                swapchain_extent.width,
+                swapchain_extent.height,
+                ImageTiling::OPTIMAL,
+            )
+            .context("Failed to create depth buffer.")?;
+
+        // create depth buffer image view
+        let depth_image_view = create_image_view(
+            depth_buffer_image,
+            depth_buffer_format,
+            ImageAspectFlags::DEPTH,
             &logical_device,
-            physical_device,
-            swapchain_extent.width,
-            swapchain_extent.height,
-            ImageTiling::OPTIMAL,
         )
-        .context("Failed to create depth buffer.")?;
+        .context("Failed to create an image view for the depth buffer.")?;
 
         // compile vertex and fragment shader modules from code.
         let vertex_shader = create_shader_module(&logical_device, shader_mapping["triangle.vert"])?;
@@ -217,7 +229,7 @@ fn main() -> Result<()> {
         // create graphics pipeline etc.
         let descriptor_set_layout = create_descriptor_set_layout(&logical_device)?;
         let pipeline_layout = create_pipeline_layout(&logical_device, &[descriptor_set_layout])?;
-        let render_pass = create_render_pass(&logical_device, format)?;
+        let render_pass = create_render_pass(&logical_device, format, depth_buffer_format)?;
         let graphics_pipeline = create_graphics_pipeline(
             vertex_shader,
             fragment_shader,
@@ -235,6 +247,7 @@ fn main() -> Result<()> {
                     &logical_device,
                     render_pass,
                     image.image_view,
+                    depth_image_view,
                     swapchain_extent,
                 )
             })
@@ -263,20 +276,20 @@ fn main() -> Result<()> {
                 queues.graphics_queue,
                 &[
                     Vertex {
-                        position: [-0.6, -0.2, 0.0],
+                        position: [-0.2, -0.2, -1.0],
                         color: [1.0, 0.0, 0.0],
                     },
                     Vertex {
-                        position: [-0.2, 0.2, 0.0],
-                        color: [0.0, 1.0, 0.0],
+                        position: [0.2, 0.2, -1.0],
+                        color: [1.0, 0.0, 0.0],
                     },
                     Vertex {
-                        position: [-0.6, 0.2, 0.0],
-                        color: [0.0, 0.0, 1.0],
+                        position: [-0.2, 0.2, -1.0],
+                        color: [1.0, 0.0, 0.0],
                     },
                     Vertex {
-                        position: [-0.2, -0.2, 0.0],
-                        color: [1.0, 1.0, 0.0],
+                        position: [0.2, -0.2, -1.0],
+                        color: [1.0, 0.0, 0.0],
                     },
                 ],
                 &[0, 1, 2, 1, 0, 3],
@@ -289,20 +302,20 @@ fn main() -> Result<()> {
                 queues.graphics_queue,
                 &[
                     Vertex {
-                        position: [0.2, -0.2, 0.0],
-                        color: [1.0, 0.0, 0.0],
-                    },
-                    Vertex {
-                        position: [0.6, 0.2, 0.0],
+                        position: [-0.2, -0.2, 1.0],
                         color: [0.0, 1.0, 0.0],
                     },
                     Vertex {
-                        position: [0.2, 0.2, 0.0],
-                        color: [0.0, 0.0, 1.0],
+                        position: [0.2, 0.2, 1.0],
+                        color: [0.0, 1.0, 0.0],
                     },
                     Vertex {
-                        position: [0.6, -0.2, 0.0],
-                        color: [1.0, 1.0, 0.0],
+                        position: [-0.2, 0.2, 1.0],
+                        color: [0.0, 1.0, 0.0],
+                    },
+                    Vertex {
+                        position: [0.2, -0.2, 1.0],
+                        color: [0.0, 1.0, 0.0],
                     },
                 ],
                 &[0, 1, 2, 1, 0, 3],
@@ -377,6 +390,7 @@ fn main() -> Result<()> {
             descriptor_pool,
             descriptor_set_layout,
             &[depth_buffer_image],
+            &[depth_image_view],
             &[depth_buffer_image_memory],
         );
         if error_code == 0 {
@@ -574,7 +588,7 @@ fn create_depth_buffer_image(
     width: u32,
     height: u32,
     tiling: ImageTiling,
-) -> Result<(Image, DeviceMemory)> {
+) -> Result<(Image, DeviceMemory, Format)> {
     let format = get_best_image_format(
         instance,
         physical_device,
@@ -587,7 +601,7 @@ fn create_depth_buffer_image(
         FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
     )
     .ok_or_else(|| anyhow!("Failed to get a valid image format."))?;
-    create_image(
+    let (image, memory) = create_image(
         instance,
         device,
         physical_device,
@@ -599,7 +613,8 @@ fn create_depth_buffer_image(
         format,
         MemoryPropertyFlags::DEVICE_LOCAL,
     )
-    .context("Failed to create depth buffer image")
+    .context("Failed to create depth buffer image")?;
+    Ok((image, memory, format))
 }
 
 fn get_best_image_format(
@@ -1006,11 +1021,19 @@ fn record_command_buffers(
             .context("Failed to begin command buffer.")?;
 
         // begin render pass
-        let clear_values = [ClearValue {
-            color: ClearColorValue {
-                float32: [0.6, 0.65, 0.4, 1.0],
+        let clear_values = [
+            ClearValue {
+                color: ClearColorValue {
+                    float32: [0.6, 0.65, 0.4, 1.0],
+                },
             },
-        }];
+            ClearValue {
+                depth_stencil: ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+        ];
         device.cmd_begin_render_pass(
             command_buffer,
             &RenderPassBeginInfo::builder()
@@ -1108,9 +1131,10 @@ fn create_framebuffer(
     device: &Device,
     render_pass: RenderPass,
     image_view: ImageView,
+    depth_image_view: ImageView,
     swapchain_extent: Extent2D,
 ) -> Result<Framebuffer> {
-    let attachments = [image_view];
+    let attachments = [image_view, depth_image_view];
     unsafe {
         device
             .create_framebuffer(
@@ -1144,23 +1168,38 @@ fn create_pipeline_layout(
     .context("Error trying to create a pipeline layout.")
 }
 
-fn create_render_pass(device: &Device, format: Format) -> Result<RenderPass> {
+fn create_render_pass(device: &Device, format: Format, depth_format: Format) -> Result<RenderPass> {
     unsafe {
-        let attachment_descriptions = [*AttachmentDescription::builder()
-            .format(format)
-            .samples(SampleCountFlags::TYPE_1)
-            .load_op(AttachmentLoadOp::CLEAR)
-            .store_op(AttachmentStoreOp::STORE)
-            .stencil_load_op(AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(AttachmentStoreOp::DONT_CARE)
-            .initial_layout(ImageLayout::UNDEFINED)
-            .final_layout(ImageLayout::PRESENT_SRC_KHR)];
+        let attachment_descriptions = [
+            *AttachmentDescription::builder()
+                .format(format)
+                .samples(SampleCountFlags::TYPE_1)
+                .load_op(AttachmentLoadOp::CLEAR)
+                .store_op(AttachmentStoreOp::STORE)
+                .stencil_load_op(AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(AttachmentStoreOp::DONT_CARE)
+                .initial_layout(ImageLayout::UNDEFINED)
+                .final_layout(ImageLayout::PRESENT_SRC_KHR),
+            *AttachmentDescription::builder()
+                .format(depth_format)
+                .samples(SampleCountFlags::TYPE_1)
+                .load_op(AttachmentLoadOp::CLEAR)
+                .store_op(AttachmentStoreOp::DONT_CARE)
+                .stencil_load_op(AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(AttachmentStoreOp::DONT_CARE)
+                .initial_layout(ImageLayout::UNDEFINED)
+                .final_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+        ];
         let attachment_references = [*AttachmentReference::builder()
             .attachment(0)
             .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let depth_attachment_reference = AttachmentReference::builder()
+            .attachment(1)
+            .layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         let subpass_descriptions = [*SubpassDescription::builder()
             .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
-            .color_attachments(&attachment_references)];
+            .color_attachments(&attachment_references)
+            .depth_stencil_attachment(&depth_attachment_reference)];
         let subpass_dependencies = [*SubpassDependency::builder()
             .src_subpass(SUBPASS_EXTERNAL)
             .dst_subpass(0)
@@ -1246,6 +1285,11 @@ fn create_graphics_pipeline(
         .alpha_blend_op(BlendOp::ADD)];
     let color_blend =
         PipelineColorBlendStateCreateInfo::builder().attachments(&color_blend_attachments);
+    let depth_stencil_state = PipelineDepthStencilStateCreateInfo::builder()
+        .depth_test_enable(true)
+        .depth_write_enable(true)
+        .depth_compare_op(CompareOp::LESS_OR_EQUAL)
+        .depth_bounds_test_enable(false);
     let graphics_pipeline_create_infos = [*GraphicsPipelineCreateInfo::builder()
         .stages(&shader_stages)
         .vertex_input_state(&vertex_input)
@@ -1254,6 +1298,7 @@ fn create_graphics_pipeline(
         .rasterization_state(&rasterization_state)
         .multisample_state(&multisample)
         .color_blend_state(&color_blend)
+        .depth_stencil_state(&depth_stencil_state)
         .layout(pipeline_layout)
         .render_pass(render_pass)
         .subpass(0)];
@@ -1442,6 +1487,7 @@ fn run_event_loop(
                 let elapsed = timestamp.duration_since(last_frame_timestamp).as_secs_f32();
                 meshes[0].push_model.0 *= Mat4::from_rotation_z(90.0_f32.to_radians() * elapsed);
                 meshes[1].push_model.0 *= Mat4::from_rotation_z(-90.0_f32.to_radians() * elapsed);
+                meshes[1].push_model.0 *= Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0) * elapsed);
                 last_frame_timestamp = timestamp;
                 window.request_redraw();
             }
@@ -1792,6 +1838,7 @@ fn cleanup(
     descriptor_pool: DescriptorPool,
     descriptor_set_layout: DescriptorSetLayout,
     images: &[Image],
+    image_views: &[ImageView],
     device_memory: &[DeviceMemory],
 ) {
     unsafe {
@@ -1829,6 +1876,9 @@ fn cleanup(
         device.destroy_pipeline_layout(pipeline_layout, None);
         for swapchain_image in swapchain_images {
             device.destroy_image_view(swapchain_image.image_view, None);
+        }
+        for image_view in image_views {
+            device.destroy_image_view(*image_view, None);
         }
         for image in images {
             device.destroy_image(*image, None);
