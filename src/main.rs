@@ -302,19 +302,19 @@ fn main() -> Result<()> {
                 queues.graphics_queue,
                 &[
                     Vertex {
-                        position: [-0.2, -0.2, 1.0],
+                        position: [-0.2, -0.2, -1.2],
                         color: [0.0, 1.0, 0.0],
                     },
                     Vertex {
-                        position: [0.2, 0.2, 1.0],
+                        position: [0.2, 0.2, -1.2],
                         color: [0.0, 1.0, 0.0],
                     },
                     Vertex {
-                        position: [-0.2, 0.2, 1.0],
+                        position: [-0.2, 0.2, -1.2],
                         color: [0.0, 1.0, 0.0],
                     },
                     Vertex {
-                        position: [0.2, -0.2, 1.0],
+                        position: [0.2, -0.2, -1.2],
                         color: [0.0, 1.0, 0.0],
                     },
                 ],
@@ -1487,7 +1487,6 @@ fn run_event_loop(
                 let elapsed = timestamp.duration_since(last_frame_timestamp).as_secs_f32();
                 meshes[0].push_model.0 *= Mat4::from_rotation_z(90.0_f32.to_radians() * elapsed);
                 meshes[1].push_model.0 *= Mat4::from_rotation_z(-90.0_f32.to_radians() * elapsed);
-                meshes[1].push_model.0 *= Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0) * elapsed);
                 last_frame_timestamp = timestamp;
                 window.request_redraw();
             }
