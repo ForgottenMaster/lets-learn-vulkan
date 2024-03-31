@@ -8,7 +8,7 @@ use {
         vk::{
             AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
             AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCopy, BufferCreateInfo,
-            BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue,
+            BufferImageCopy, BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue,
             ColorComponentFlags, ColorSpaceKHR, CommandBuffer, CommandBufferAllocateInfo,
             CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags, CommandPool,
             CommandPoolCreateFlags, CommandPoolCreateInfo, CompareOp, ComponentMapping,
@@ -18,11 +18,11 @@ use {
             DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Extent2D,
             Extent3D, Fence, FenceCreateFlags, FenceCreateInfo, Format, Framebuffer,
             FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags,
-            ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageType, ImageUsageFlags,
-            ImageView, ImageViewCreateInfo, ImageViewType, IndexType, MemoryAllocateInfo,
-            MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements, PhysicalDevice,
-            PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint, PipelineCache,
-            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            ImageCreateInfo, ImageLayout, ImageSubresourceLayers, ImageSubresourceRange, ImageType,
+            ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, IndexType,
+            MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements, Offset3D,
+            PhysicalDevice, PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint,
+            PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
             PipelineDepthStencilStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
             PipelineLayout, PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
             PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
@@ -40,8 +40,11 @@ use {
     },
     ash_window::enumerate_required_extensions,
     glam::{Mat4, Vec3},
+    image::EncodableLayout,
     raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle},
-    std::{cmp, collections::HashSet, ffi::CStr, mem, ptr, time::Instant},
+    std::{
+        cmp, collections::HashSet, ffi::CStr, fmt::Display, mem, path::Path, ptr, time::Instant,
+    },
     winit::{
         dpi::{PhysicalSize, Size},
         event::{Event, WindowEvent},
@@ -199,6 +202,10 @@ fn main() -> Result<()> {
         )?;
         let swapchain_images =
             get_swapchain_images(&swapchain_ext, swapchain, format, &logical_device)?;
+
+        // load image data from file
+        let (_image_bytes, _width, _height) =
+            load_image_from_file("assets/textures/image1.jpg").context("Loading image1.jpg")?;
 
         // create depth buffer image
         let (depth_buffer_image, depth_buffer_image_memory, depth_buffer_format) =
@@ -636,6 +643,57 @@ fn get_best_image_format(
 }
 
 ////////////////////////// Buffers //////////////////////////////
+fn copy_image_buffer(
+    device: &Device,
+    transfer_queue: Queue,
+    transfer_command_pool: CommandPool,
+    src_buffer: Buffer,
+    dst_image: Image,
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    let transfer_command_buffer = begin_command_buffer(device, transfer_command_pool)
+        .context("Beginning command buffer recording for copy_image_buffer")?;
+
+    unsafe {
+        let image_subresource = ImageSubresourceLayers::builder()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1)
+            .build();
+        let offset_3d = Offset3D::builder().x(0).y(0).z(0).build();
+        let extent_3d = Extent3D::builder()
+            .width(width)
+            .height(height)
+            .depth(1)
+            .build();
+        let buffer_image_copy = BufferImageCopy::builder()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(image_subresource)
+            .image_offset(offset_3d)
+            .image_extent(extent_3d)
+            .build();
+        device.cmd_copy_buffer_to_image(
+            transfer_command_buffer,
+            src_buffer,
+            dst_image,
+            ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[buffer_image_copy],
+        );
+    }
+
+    end_and_submit_command_buffer(
+        device,
+        transfer_queue,
+        transfer_command_pool,
+        transfer_command_buffer,
+    )
+    .context("Ending and submitting command buffer recording in copy_image_buffer")
+}
+
 fn create_buffer(
     instance: &Instance,
     device: &Device,
@@ -728,23 +786,9 @@ fn create_staged_buffer<T>(
         ptr::copy_nonoverlapping(elements.as_ptr(), write_ptr, elements.len());
         device.unmap_memory(staging_buffer_memory);
 
-        // allocate a (one time submit) command buffer from the pool to do the transfer
-        let command_buffer = device
-            .allocate_command_buffers(
-                &CommandBufferAllocateInfo::builder()
-                    .command_pool(transfer_command_pool)
-                    .level(CommandBufferLevel::PRIMARY)
-                    .command_buffer_count(1),
-            )
-            .context("Failed to allocate a staging transfer command buffer.")?[0];
-
-        // record the transfer command from staging to GPU buffer
-        device
-            .begin_command_buffer(
-                command_buffer,
-                &CommandBufferBeginInfo::builder().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )
-            .context("Failed to begin recording the command buffer.")?;
+        // Begin command buffer.
+        let command_buffer = begin_command_buffer(device, transfer_command_pool)
+            .context("Creating a transfer command buffer for staging buffer copying")?;
 
         // transfer.
         device.cmd_copy_buffer(
@@ -754,23 +798,14 @@ fn create_staged_buffer<T>(
             &[*BufferCopy::builder().size(size)],
         );
 
-        // end command buffer recording
-        device
-            .end_command_buffer(command_buffer)
-            .context("Failed to end recording the command buffer.")?;
-
-        // submit the command buffer to the transfer queue
-        let command_buffers = [command_buffer];
-        let submit_infos = [*SubmitInfo::builder().command_buffers(&command_buffers)];
-        device
-            .queue_submit(transfer_queue, &submit_infos, Fence::null())
-            .context("Failed to submit the command buffer to the queue.")?;
-        device
-            .queue_wait_idle(transfer_queue)
-            .context("Failed to wait for the transfer to finish.")?;
-
-        // free the command buffer
-        device.free_command_buffers(transfer_command_pool, &[command_buffer]);
+        // End and submit command buffer.
+        end_and_submit_command_buffer(
+            device,
+            transfer_queue,
+            transfer_command_pool,
+            command_buffer,
+        )
+        .context("End and submit command buffer for transferring to GPU buffer")?;
 
         // free staging buffer
         device.free_memory(staging_buffer_memory, None);
@@ -997,6 +1032,53 @@ fn create_synchronization(
 }
 
 ////////////////////////// Command Buffers ////////////////////////////
+fn begin_command_buffer(device: &Device, command_pool: CommandPool) -> Result<CommandBuffer> {
+    unsafe {
+        let command_buffer = device
+            .allocate_command_buffers(
+                &CommandBufferAllocateInfo::builder()
+                    .command_pool(command_pool)
+                    .level(CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )
+            .context("Failed to allocate a command buffer.")?[0];
+
+        device
+            .begin_command_buffer(
+                command_buffer,
+                &CommandBufferBeginInfo::builder().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )
+            .context("Failed to begin recording the command buffer.")?;
+
+        Ok(command_buffer)
+    }
+}
+
+fn end_and_submit_command_buffer(
+    device: &Device,
+    queue: Queue,
+    command_pool: CommandPool,
+    command_buffer: CommandBuffer,
+) -> Result<()> {
+    unsafe {
+        device
+            .end_command_buffer(command_buffer)
+            .context("Failed to end recording the command buffer.")?;
+
+        let command_buffers = [command_buffer];
+        let submit_infos = [*SubmitInfo::builder().command_buffers(&command_buffers)];
+        device
+            .queue_submit(queue, &submit_infos, Fence::null())
+            .context("Failed to submit the command buffer to the queue.")?;
+        device
+            .queue_wait_idle(queue)
+            .context("Failed to wait for the transfer to finish.")?;
+
+        device.free_command_buffers(command_pool, &[command_buffer]);
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_command_buffers(
     device: &Device,
@@ -1889,4 +1971,15 @@ fn cleanup(
         surface_ext.destroy_surface(surface, None);
         instance.destroy_instance(None);
     }
+}
+
+///////////////////////// Images ////////////////////////////////
+
+fn load_image_from_file(path: impl AsRef<Path> + Clone + Display) -> Result<(Vec<u8>, u32, u32)> {
+    let image = image::io::Reader::open(path.clone())
+        .with_context(|| format!("Loading image from file path: {path}"))?
+        .decode()
+        .with_context(|| format!("Decoding image loaded from file path: {path}"))?
+        .into_rgba8();
+    Ok((image.as_bytes().to_owned(), image.width(), image.height()))
 }
