@@ -2038,7 +2038,11 @@ fn transition_image_layout(
                 PipelineStageFlags::TRANSFER,
                 PipelineStageFlags::FRAGMENT_SHADER,
             ),
-            _ => unimplemented!(),
+            _ => {
+                return Err(anyhow!(
+                    "Unsupported image layout transition from {old_layout:?} to {new_layout:?}"
+                ))
+            }
         };
 
     let memory_barrier = ImageMemoryBarrier::builder()
