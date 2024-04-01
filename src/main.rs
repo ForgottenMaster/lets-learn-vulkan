@@ -2024,35 +2024,33 @@ fn transition_image_layout(
         .layer_count(1)
         .build();
 
-    let mut memory_barrier = ImageMemoryBarrier::builder()
+    let (src_access_mask, dst_access_mask, src_stage_flags, dst_stage_flags) =
+        match (old_layout, new_layout) {
+            (ImageLayout::UNDEFINED, ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                AccessFlags::NONE,
+                AccessFlags::TRANSFER_WRITE,
+                PipelineStageFlags::TOP_OF_PIPE,
+                PipelineStageFlags::TRANSFER,
+            ),
+            (ImageLayout::TRANSFER_DST_OPTIMAL, ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                AccessFlags::TRANSFER_WRITE,
+                AccessFlags::SHADER_READ,
+                PipelineStageFlags::TRANSFER,
+                PipelineStageFlags::FRAGMENT_SHADER,
+            ),
+            _ => unimplemented!(),
+        };
+
+    let memory_barrier = ImageMemoryBarrier::builder()
         .old_layout(old_layout)
         .new_layout(new_layout)
         .src_queue_family_index(QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
         .image(image)
-        .subresource_range(subresource_range);
-
-    let mut src_stage_flags = PipelineStageFlags::NONE;
-    let mut dst_stage_flags = PipelineStageFlags::NONE;
-
-    // set data based on layout transition details
-    if old_layout == ImageLayout::UNDEFINED && new_layout == ImageLayout::TRANSFER_DST_OPTIMAL {
-        memory_barrier = memory_barrier
-            .src_access_mask(AccessFlags::NONE)
-            .dst_access_mask(AccessFlags::TRANSFER_WRITE);
-        src_stage_flags = PipelineStageFlags::TOP_OF_PIPE;
-        dst_stage_flags = PipelineStageFlags::TRANSFER;
-    } else if old_layout == ImageLayout::TRANSFER_DST_OPTIMAL
-        && new_layout == ImageLayout::SHADER_READ_ONLY_OPTIMAL
-    {
-        memory_barrier = memory_barrier
-            .src_access_mask(AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(AccessFlags::SHADER_READ);
-        src_stage_flags = PipelineStageFlags::TRANSFER;
-        dst_stage_flags = PipelineStageFlags::FRAGMENT_SHADER;
-    }
-
-    let memory_barrier = memory_barrier.build();
+        .subresource_range(subresource_range)
+        .src_access_mask(src_access_mask)
+        .dst_access_mask(dst_access_mask)
+        .build();
 
     unsafe {
         device.cmd_pipeline_barrier(
