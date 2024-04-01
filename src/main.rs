@@ -12,17 +12,18 @@ use {
             ColorComponentFlags, ColorSpaceKHR, CommandBuffer, CommandBufferAllocateInfo,
             CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags, CommandPool,
             CommandPoolCreateFlags, CommandPoolCreateInfo, CompareOp, ComponentMapping,
-            ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DescriptorBufferInfo,
-            DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet,
-            DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
-            DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Extent2D,
-            Extent3D, Fence, FenceCreateFlags, FenceCreateInfo, Format, Framebuffer,
-            FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags,
-            ImageCreateInfo, ImageLayout, ImageSubresourceLayers, ImageSubresourceRange, ImageType,
-            ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, IndexType,
-            MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements, Offset3D,
-            PhysicalDevice, PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint,
-            PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+            ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DependencyFlags,
+            DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
+            DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
+            DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
+            DeviceMemory, DeviceSize, Extent2D, Extent3D, Fence, FenceCreateFlags, FenceCreateInfo,
+            Format, Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo,
+            Image, ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier,
+            ImageSubresourceLayers, ImageSubresourceRange, ImageType, ImageUsageFlags, ImageView,
+            ImageViewCreateInfo, ImageViewType, IndexType, MemoryAllocateInfo, MemoryMapFlags,
+            MemoryPropertyFlags, MemoryRequirements, Offset3D, PhysicalDevice,
+            PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint, PipelineCache,
+            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
             PipelineDepthStencilStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
             PipelineLayout, PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
             PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
@@ -34,7 +35,7 @@ use {
             SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
             SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, VertexInputAttributeDescription,
             VertexInputBindingDescription, VertexInputRate, Viewport, WriteDescriptorSet,
-            SUBPASS_EXTERNAL,
+            QUEUE_FAMILY_IGNORED, SUBPASS_EXTERNAL,
         },
         Device, Entry, Instance,
     },
@@ -152,6 +153,13 @@ impl SurfaceInfo {
     }
 }
 
+struct Texture {
+    image: Image,
+    image_memory: DeviceMemory,
+    _width: u32,
+    _height: u32,
+}
+
 #[repr(C)]
 struct UboViewProjection {
     projection: Mat4,
@@ -202,10 +210,6 @@ fn main() -> Result<()> {
         )?;
         let swapchain_images =
             get_swapchain_images(&swapchain_ext, swapchain, format, &logical_device)?;
-
-        // load image data from file
-        let (_image_bytes, _width, _height) =
-            load_image_from_file("assets/textures/image1.jpg").context("Loading image1.jpg")?;
 
         // create depth buffer image
         let (depth_buffer_image, depth_buffer_image_memory, depth_buffer_format) =
@@ -272,6 +276,17 @@ fn main() -> Result<()> {
             graphics_command_pool,
             swapchain_images.len() as u32,
         )?;
+
+        // create textures
+        let textures = vec![create_texture(
+            &instance,
+            &logical_device,
+            physical_device,
+            queues.graphics_queue,
+            graphics_command_pool,
+            "assets/textures/image1.jpg",
+        )
+        .context("Creating texture for image1.jpg")?];
 
         // create meshes
         let mut meshes = vec![
@@ -399,6 +414,7 @@ fn main() -> Result<()> {
             &[depth_buffer_image],
             &[depth_image_view],
             &[depth_buffer_image_memory],
+            &textures,
         );
         if error_code == 0 {
             Ok(())
@@ -1921,6 +1937,7 @@ fn cleanup(
     images: &[Image],
     image_views: &[ImageView],
     device_memory: &[DeviceMemory],
+    textures: &[Texture],
 ) {
     unsafe {
         device.device_wait_idle().unwrap();
@@ -1967,6 +1984,10 @@ fn cleanup(
         for device_memory in device_memory {
             device.free_memory(*device_memory, None);
         }
+        for texture in textures {
+            device.destroy_image(texture.image, None);
+            device.free_memory(texture.image_memory, None);
+        }
         device.destroy_device(None);
         surface_ext.destroy_surface(surface, None);
         instance.destroy_instance(None);
@@ -1982,4 +2003,188 @@ fn load_image_from_file(path: impl AsRef<Path> + Clone + Display) -> Result<(Vec
         .with_context(|| format!("Decoding image loaded from file path: {path}"))?
         .into_rgba8();
     Ok((image.as_bytes().to_owned(), image.width(), image.height()))
+}
+
+fn transition_image_layout(
+    device: &Device,
+    queue: Queue,
+    command_pool: CommandPool,
+    image: Image,
+    old_layout: ImageLayout,
+    new_layout: ImageLayout,
+) -> Result<()> {
+    let command_buffer = begin_command_buffer(device, command_pool)
+        .context("Beginning a command buffer for transitioning image layout")?;
+
+    let subresource_range = ImageSubresourceRange::builder()
+        .aspect_mask(ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(0)
+        .layer_count(1)
+        .build();
+
+    let mut memory_barrier = ImageMemoryBarrier::builder()
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(subresource_range);
+
+    let mut src_stage_flags = PipelineStageFlags::NONE;
+    let mut dst_stage_flags = PipelineStageFlags::NONE;
+
+    // set data based on layout transition details
+    if old_layout == ImageLayout::UNDEFINED && new_layout == ImageLayout::TRANSFER_DST_OPTIMAL {
+        memory_barrier = memory_barrier
+            .src_access_mask(AccessFlags::NONE)
+            .dst_access_mask(AccessFlags::TRANSFER_WRITE);
+        src_stage_flags = PipelineStageFlags::TOP_OF_PIPE;
+        dst_stage_flags = PipelineStageFlags::TRANSFER;
+    } else if old_layout == ImageLayout::TRANSFER_DST_OPTIMAL
+        && new_layout == ImageLayout::SHADER_READ_ONLY_OPTIMAL
+    {
+        memory_barrier = memory_barrier
+            .src_access_mask(AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(AccessFlags::SHADER_READ);
+        src_stage_flags = PipelineStageFlags::TRANSFER;
+        dst_stage_flags = PipelineStageFlags::FRAGMENT_SHADER;
+    }
+
+    let memory_barrier = memory_barrier.build();
+
+    unsafe {
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            src_stage_flags,
+            dst_stage_flags,
+            DependencyFlags::empty(),
+            &[],
+            &[],
+            &[memory_barrier],
+        );
+    }
+
+    end_and_submit_command_buffer(device, queue, command_pool, command_buffer)
+        .context("Ending a command buffer for transitioning image layout")?;
+
+    Ok(())
+}
+
+///////////////////////// Textures //////////////////////////////
+
+fn create_texture(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    transfer_queue: Queue,
+    transfer_command_pool: CommandPool,
+    path: impl AsRef<Path> + Clone + Display,
+) -> Result<Texture> {
+    let (image_data, width, height) = load_image_from_file(path.clone())
+        .with_context(|| format!("Attempting to create texture for image at path {path}"))?;
+    let image_size = (width * height * 4) as DeviceSize; // 4 bytes per pixel RGBA8
+
+    // Create a staging buffer to write the image data into.
+    let (staging_buffer, staging_buffer_memory) = create_buffer(
+        instance,
+        device,
+        physical_device,
+        BufferUsageFlags::TRANSFER_SRC,
+        MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+        image_size,
+    )
+    .with_context(|| format!("Attempting to create texture for image at path {path}"))?;
+
+    // Copy data into the staging buffer
+    unsafe {
+        let write_ptr = device
+            .map_memory(
+                staging_buffer_memory,
+                0,
+                image_size,
+                MemoryMapFlags::empty(),
+            )
+            .context("Failed to map the staging buffer memory.")?
+            as *mut u8;
+        ptr::copy_nonoverlapping(image_data.as_ptr(), write_ptr, image_size as usize);
+        device.unmap_memory(staging_buffer_memory);
+    }
+
+    // Find an appropriate format for the destination image
+    let format = get_best_image_format(
+        instance,
+        physical_device,
+        &[Format::R8G8B8A8_UNORM],
+        ImageTiling::OPTIMAL,
+        FormatFeatureFlags::COLOR_ATTACHMENT,
+    )
+    .with_context(|| {
+        format!("Attempting to find image format while creating a texture for image at path {path}")
+    })?;
+
+    // Create the destination image for the copy
+    let (image, image_memory) = create_image(
+        instance,
+        device,
+        physical_device,
+        width,
+        height,
+        ImageTiling::OPTIMAL,
+        ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::SAMPLED,
+        ImageLayout::UNDEFINED,
+        format,
+        MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .with_context(|| format!("Attempting to create texture for image at path {path}"))?;
+
+    // Transition the destination image layout before we copy it
+    transition_image_layout(
+        device,
+        transfer_queue,
+        transfer_command_pool,
+        image,
+        ImageLayout::UNDEFINED,
+        ImageLayout::TRANSFER_DST_OPTIMAL,
+    )
+    .with_context(|| format!("Attempting to create texture for image at path {path}"))?;
+
+    // We can copy the image data from the buffer to the image now
+    copy_image_buffer(
+        device,
+        transfer_queue,
+        transfer_command_pool,
+        staging_buffer,
+        image,
+        width,
+        height,
+    )
+    .with_context(|| format!("Attempting to create texture for image at path {path}"))?;
+
+    // Transition image layout to be readable by shader
+    transition_image_layout(
+        device,
+        transfer_queue,
+        transfer_command_pool,
+        image,
+        ImageLayout::TRANSFER_DST_OPTIMAL,
+        ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+    )
+    .with_context(|| {
+        format!("Attempting to transition texture to shader readable for image at path {path}")
+    })?;
+
+    // Free up staging buffer and memory
+    unsafe {
+        device.destroy_buffer(staging_buffer, None);
+        device.free_memory(staging_buffer_memory, None);
+    }
+
+    Ok(Texture {
+        image,
+        image_memory,
+        _width: width,
+        _height: height,
+    })
 }
