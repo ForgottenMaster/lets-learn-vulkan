@@ -2120,7 +2120,7 @@ fn create_texture(
         physical_device,
         &[Format::R8G8B8A8_UNORM],
         ImageTiling::OPTIMAL,
-        FormatFeatureFlags::COLOR_ATTACHMENT,
+        FormatFeatureFlags::TRANSFER_DST | FormatFeatureFlags::SAMPLED_IMAGE,
     )
     .with_context(|| {
         format!("Attempting to find image format while creating a texture for image at path {path}")
