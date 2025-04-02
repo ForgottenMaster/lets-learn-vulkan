@@ -7,30 +7,31 @@ use {
         vk,
         vk::{
             AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-            AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCopy, BufferCreateInfo,
-            BufferImageCopy, BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue,
-            ColorComponentFlags, ColorSpaceKHR, CommandBuffer, CommandBufferAllocateInfo,
-            CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags, CommandPool,
-            CommandPoolCreateFlags, CommandPoolCreateInfo, CompareOp, ComponentMapping,
-            ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DependencyFlags,
-            DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
-            DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
-            DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
-            DeviceMemory, DeviceSize, Extent2D, Extent3D, Fence, FenceCreateFlags, FenceCreateInfo,
-            Format, Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo,
-            Image, ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier,
-            ImageSubresourceLayers, ImageSubresourceRange, ImageType, ImageUsageFlags, ImageView,
-            ImageViewCreateInfo, ImageViewType, IndexType, MemoryAllocateInfo, MemoryMapFlags,
-            MemoryPropertyFlags, MemoryRequirements, Offset3D, PhysicalDevice,
-            PhysicalDeviceMemoryProperties, Pipeline, PipelineBindPoint, PipelineCache,
-            PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-            PipelineDepthStencilStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
-            PipelineLayout, PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
-            PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-            PipelineStageFlags, PipelineVertexInputStateCreateInfo,
+            AttachmentStoreOp, BlendFactor, BlendOp, BorderColor, Buffer, BufferCopy,
+            BufferCreateInfo, BufferImageCopy, BufferUsageFlags, ClearColorValue,
+            ClearDepthStencilValue, ClearValue, ColorComponentFlags, ColorSpaceKHR, CommandBuffer,
+            CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
+            CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
+            CompareOp, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
+            DependencyFlags, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool,
+            DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet, DescriptorSetAllocateInfo,
+            DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
+            DescriptorType, DeviceMemory, DeviceSize, Extent2D, Extent3D, Fence, FenceCreateFlags,
+            FenceCreateInfo, Filter, Format, Framebuffer, FramebufferCreateInfo, FrontFace,
+            GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageCreateInfo, ImageLayout,
+            ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange, ImageType,
+            ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, IndexType,
+            MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements, Offset3D,
+            PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceMemoryProperties, Pipeline,
+            PipelineBindPoint, PipelineCache, PipelineColorBlendAttachmentState,
+            PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo,
+            PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
+            PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+            PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo,
             PipelineViewportStateCreateInfo, PolygonMode, PresentInfoKHR, PresentModeKHR,
             PrimitiveTopology, PushConstantRange, Queue, Rect2D, RenderPass, RenderPassBeginInfo,
-            RenderPassCreateInfo, SampleCountFlags, Semaphore, SemaphoreCreateInfo, ShaderModule,
+            RenderPassCreateInfo, SampleCountFlags, Sampler, SamplerAddressMode, SamplerCreateInfo,
+            SamplerMipmapMode, Semaphore, SemaphoreCreateInfo, ShaderModule,
             ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubmitInfo, SubpassContents,
             SubpassDependency, SubpassDescription, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
             SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, VertexInputAttributeDescription,
@@ -63,6 +64,7 @@ const MAX_FRAMES: usize = 2;
 struct Vertex {
     position: [f32; 3], // offset 0
     color: [f32; 3],    // offset 12
+    tex: [f32; 2],      // offset 24
 }
 
 struct QueueFamilyIndices {
@@ -153,11 +155,16 @@ impl SurfaceInfo {
     }
 }
 
-struct Texture {
+struct TextureImage {
     image: Image,
     image_memory: DeviceMemory,
     _width: u32,
     _height: u32,
+}
+
+struct Texture {
+    image: TextureImage,
+    view: ImageView,
 }
 
 #[repr(C)]
@@ -176,6 +183,7 @@ struct Mesh {
     index_buffer_memory: DeviceMemory,
     index_count: usize,
     push_model: PushModel,
+    texture_index: usize,
 }
 
 fn main() -> Result<()> {
@@ -238,8 +246,142 @@ fn main() -> Result<()> {
             create_shader_module(&logical_device, shader_mapping["triangle.frag"])?;
 
         // create graphics pipeline etc.
-        let descriptor_set_layout = create_descriptor_set_layout(&logical_device)?;
-        let pipeline_layout = create_pipeline_layout(&logical_device, &[descriptor_set_layout])?;
+        let uniform_buffer_descriptor_set_layout =
+            create_uniform_buffer_descriptor_set_layout(&logical_device)?;
+
+        // create a command pool for the graphics queue family that we'll use for draw commands.
+        let graphics_command_pool = create_command_pool(
+            &logical_device,
+            queue_family_indices.graphics_family.unwrap(),
+        )?;
+
+        // create textures
+        let textures = vec![create_texture(
+            &instance,
+            &logical_device,
+            physical_device,
+            queues.graphics_queue,
+            graphics_command_pool,
+            "assets/textures/image1.jpg",
+        )
+        .context("Creating texture for image1.jpg")?];
+
+        // create a sampler
+        let sampler =
+            create_texture_sampler(&logical_device).context("Creating a texture sampler to use")?;
+
+        // create meshes
+        let mut meshes = vec![
+            create_mesh(
+                &instance,
+                &logical_device,
+                physical_device,
+                graphics_command_pool,
+                queues.graphics_queue,
+                &[
+                    Vertex {
+                        position: [-0.2, -0.2, -1.0],
+                        color: [1.0, 0.0, 0.0],
+                        tex: [1.0, 1.0],
+                    },
+                    Vertex {
+                        position: [0.2, 0.2, -1.0],
+                        color: [1.0, 0.0, 0.0],
+                        tex: [1.0, 0.0],
+                    },
+                    Vertex {
+                        position: [-0.2, 0.2, -1.0],
+                        color: [1.0, 0.0, 0.0],
+                        tex: [0.0, 0.0],
+                    },
+                    Vertex {
+                        position: [0.2, -0.2, -1.0],
+                        color: [1.0, 0.0, 0.0],
+                        tex: [0.0, 1.0],
+                    },
+                ],
+                &[0, 1, 2, 1, 0, 3],
+                0,
+            )?,
+            create_mesh(
+                &instance,
+                &logical_device,
+                physical_device,
+                graphics_command_pool,
+                queues.graphics_queue,
+                &[
+                    Vertex {
+                        position: [-0.2, -0.2, -1.2],
+                        color: [0.0, 1.0, 0.0],
+                        tex: [1.0, 1.0],
+                    },
+                    Vertex {
+                        position: [0.2, 0.2, -1.2],
+                        color: [0.0, 1.0, 0.0],
+                        tex: [1.0, 0.0],
+                    },
+                    Vertex {
+                        position: [-0.2, 0.2, -1.2],
+                        color: [0.0, 1.0, 0.0],
+                        tex: [0.0, 0.0],
+                    },
+                    Vertex {
+                        position: [0.2, -0.2, -1.2],
+                        color: [0.0, 1.0, 0.0],
+                        tex: [0.0, 1.0],
+                    },
+                ],
+                &[0, 1, 2, 1, 0, 3],
+                0,
+            )?,
+        ];
+
+        // uniform buffers (one per swapchain image).
+        let vp_uniform_buffers = create_vp_uniform_buffers(
+            &instance,
+            &logical_device,
+            physical_device,
+            swapchain_images.len(),
+        )?;
+
+        // descriptors.
+        let descriptor_pool = create_descriptor_pool(
+            &logical_device,
+            vp_uniform_buffers.len() as u32,
+            textures.len() as u32,
+        )?;
+        let uniform_buffer_descriptor_sets = allocate_descriptor_sets(
+            &logical_device,
+            descriptor_pool,
+            uniform_buffer_descriptor_set_layout,
+            vp_uniform_buffers.len(),
+        )?;
+
+        // texture descriptor sets.
+        let texture_descriptor_set_layout = create_texture_descriptor_set_layout(&logical_device)?;
+        let texture_descriptor_sets = allocate_descriptor_sets(
+            &logical_device,
+            descriptor_pool,
+            texture_descriptor_set_layout,
+            textures.len(),
+        )?;
+
+        update_descriptor_sets(
+            &logical_device,
+            &vp_uniform_buffers,
+            &textures,
+            sampler,
+            &uniform_buffer_descriptor_sets,
+            &texture_descriptor_sets,
+        );
+
+        let pipeline_layout = create_pipeline_layout(
+            &logical_device,
+            &[
+                uniform_buffer_descriptor_set_layout,
+                texture_descriptor_set_layout,
+            ],
+        )?;
         let render_pass = create_render_pass(&logical_device, format, depth_buffer_format)?;
         let graphics_pipeline = create_graphics_pipeline(
             vertex_shader,
@@ -264,104 +406,12 @@ fn main() -> Result<()> {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        // create a command pool for the graphics queue family that we'll use for draw commands.
-        let graphics_command_pool = create_command_pool(
-            &logical_device,
-            queue_family_indices.graphics_family.unwrap(),
-        )?;
-
         // allocate command buffers from the graphics queue family.
         let command_buffers = allocate_command_buffers(
             &logical_device,
             graphics_command_pool,
             swapchain_images.len() as u32,
         )?;
-
-        // create textures
-        let textures = vec![create_texture(
-            &instance,
-            &logical_device,
-            physical_device,
-            queues.graphics_queue,
-            graphics_command_pool,
-            "assets/textures/image1.jpg",
-        )
-        .context("Creating texture for image1.jpg")?];
-
-        // create meshes
-        let mut meshes = vec![
-            create_mesh(
-                &instance,
-                &logical_device,
-                physical_device,
-                graphics_command_pool,
-                queues.graphics_queue,
-                &[
-                    Vertex {
-                        position: [-0.2, -0.2, -1.0],
-                        color: [1.0, 0.0, 0.0],
-                    },
-                    Vertex {
-                        position: [0.2, 0.2, -1.0],
-                        color: [1.0, 0.0, 0.0],
-                    },
-                    Vertex {
-                        position: [-0.2, 0.2, -1.0],
-                        color: [1.0, 0.0, 0.0],
-                    },
-                    Vertex {
-                        position: [0.2, -0.2, -1.0],
-                        color: [1.0, 0.0, 0.0],
-                    },
-                ],
-                &[0, 1, 2, 1, 0, 3],
-            )?,
-            create_mesh(
-                &instance,
-                &logical_device,
-                physical_device,
-                graphics_command_pool,
-                queues.graphics_queue,
-                &[
-                    Vertex {
-                        position: [-0.2, -0.2, -1.2],
-                        color: [0.0, 1.0, 0.0],
-                    },
-                    Vertex {
-                        position: [0.2, 0.2, -1.2],
-                        color: [0.0, 1.0, 0.0],
-                    },
-                    Vertex {
-                        position: [-0.2, 0.2, -1.2],
-                        color: [0.0, 1.0, 0.0],
-                    },
-                    Vertex {
-                        position: [0.2, -0.2, -1.2],
-                        color: [0.0, 1.0, 0.0],
-                    },
-                ],
-                &[0, 1, 2, 1, 0, 3],
-            )?,
-        ];
-
-        // uniform buffers (one per swapchain image).
-        let vp_uniform_buffers = create_vp_uniform_buffers(
-            &instance,
-            &logical_device,
-            physical_device,
-            swapchain_images.len(),
-        )?;
-
-        // descriptors.
-        let descriptor_pool =
-            create_descriptor_pool(&logical_device, vp_uniform_buffers.len() as u32)?;
-        let descriptor_sets = allocate_descriptor_sets(
-            &logical_device,
-            descriptor_pool,
-            descriptor_set_layout,
-            vp_uniform_buffers.len(),
-        )?;
-        update_descriptor_sets(&logical_device, &vp_uniform_buffers, &descriptor_sets);
 
         // create semaphores and fences for the number of frames we're aiming at
         // defined by MAX_FRAMES constant.
@@ -390,7 +440,8 @@ fn main() -> Result<()> {
             render_pass,
             swapchain_extent,
             graphics_pipeline,
-            &descriptor_sets,
+            &uniform_buffer_descriptor_sets,
+            &texture_descriptor_sets,
         );
         cleanup(
             instance,
@@ -410,11 +461,15 @@ fn main() -> Result<()> {
             meshes,
             vp_uniform_buffers,
             descriptor_pool,
-            descriptor_set_layout,
+            &[
+                uniform_buffer_descriptor_set_layout,
+                texture_descriptor_set_layout,
+            ],
             &[depth_buffer_image],
             &[depth_image_view],
             &[depth_buffer_image_memory],
             &textures,
+            sampler,
         );
         if error_code == 0 {
             Ok(())
@@ -436,6 +491,7 @@ fn create_mesh(
     transfer_queue: Queue,
     vertex_buffer_data: &[Vertex],
     index_buffer_data: &[u16],
+    texture_index: usize,
 ) -> Result<Mesh> {
     let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(
         instance,
@@ -462,11 +518,12 @@ fn create_mesh(
         index_buffer_memory,
         index_count: index_buffer_data.len(),
         push_model: PushModel(Mat4::IDENTITY),
+        texture_index,
     })
 }
 
 ////////////////////////// Descriptors //////////////////////////
-fn create_descriptor_set_layout(device: &Device) -> Result<DescriptorSetLayout> {
+fn create_uniform_buffer_descriptor_set_layout(device: &Device) -> Result<DescriptorSetLayout> {
     unsafe {
         device
             .create_descriptor_set_layout(
@@ -482,15 +539,46 @@ fn create_descriptor_set_layout(device: &Device) -> Result<DescriptorSetLayout> 
     }
 }
 
-fn create_descriptor_pool(device: &Device, count: u32) -> Result<DescriptorPool> {
+fn create_texture_descriptor_set_layout(device: &Device) -> Result<DescriptorSetLayout> {
+    unsafe {
+        device
+            .create_descriptor_set_layout(
+                &DescriptorSetLayoutCreateInfo::builder().bindings(&[
+                    *DescriptorSetLayoutBinding::builder()
+                        .descriptor_type(DescriptorType::SAMPLED_IMAGE)
+                        .descriptor_count(1)
+                        .stage_flags(ShaderStageFlags::FRAGMENT)
+                        .binding(0),
+                    *DescriptorSetLayoutBinding::builder()
+                        .descriptor_type(DescriptorType::SAMPLER)
+                        .descriptor_count(1)
+                        .stage_flags(ShaderStageFlags::FRAGMENT)
+                        .binding(1),
+                ]),
+                None,
+            )
+            .context("Failed to create a descriptor set layout.")
+    }
+}
+
+fn create_descriptor_pool(
+    device: &Device,
+    uniform_count: u32,
+    texture_count: u32,
+) -> Result<DescriptorPool> {
     unsafe {
         device
             .create_descriptor_pool(
                 &DescriptorPoolCreateInfo::builder()
-                    .max_sets(count)
-                    .pool_sizes(&[*DescriptorPoolSize::builder()
-                        .ty(DescriptorType::UNIFORM_BUFFER)
-                        .descriptor_count(count)]),
+                    .max_sets(uniform_count + texture_count)
+                    .pool_sizes(&[
+                        *DescriptorPoolSize::builder()
+                            .ty(DescriptorType::UNIFORM_BUFFER)
+                            .descriptor_count(uniform_count),
+                        *DescriptorPoolSize::builder()
+                            .ty(DescriptorType::COMBINED_IMAGE_SAMPLER)
+                            .descriptor_count(texture_count),
+                    ]),
                 None,
             )
             .context("Failed to create a descriptor pool.")
@@ -520,7 +608,10 @@ fn allocate_descriptor_sets(
 fn update_descriptor_sets(
     device: &Device,
     vp_buffers: &[(Buffer, DeviceMemory)],
-    sets: &[DescriptorSet],
+    textures: &[Texture],
+    sampler: Sampler,
+    uniform_buffer_sets: &[DescriptorSet],
+    texture_sets: &[DescriptorSet],
 ) {
     let vp_buffer_infos = vp_buffers
         .iter()
@@ -531,16 +622,52 @@ fn update_descriptor_sets(
         })
         .collect::<Vec<_>>();
 
-    let writes = vp_buffer_infos
+    let texture_infos = textures
         .iter()
-        .zip(sets)
-        .map(|(buffer_info, set)| {
-            *WriteDescriptorSet::builder()
-                .dst_set(*set)
-                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(buffer_info)
+        .map(|texture| {
+            [DescriptorImageInfo::builder()
+                .sampler(sampler)
+                .image_view(texture.view)
+                .image_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .build()]
         })
         .collect::<Vec<_>>();
+
+    let mut writes = vp_buffer_infos
+        .iter()
+        .zip(uniform_buffer_sets)
+        .map(|(buffer_info, set)| {
+            WriteDescriptorSet::builder()
+                .dst_set(*set)
+                .dst_binding(0)
+                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(buffer_info)
+                .build()
+        })
+        .collect::<Vec<_>>();
+
+    writes.extend(
+        texture_infos
+            .iter()
+            .zip(texture_sets)
+            .flat_map(|(texture_info, set)| {
+                [
+                    WriteDescriptorSet::builder()
+                        .dst_set(*set)
+                        .dst_binding(0)
+                        .descriptor_type(DescriptorType::SAMPLED_IMAGE)
+                        .image_info(texture_info)
+                        .build(),
+                    WriteDescriptorSet::builder()
+                        .dst_set(*set)
+                        .dst_binding(1)
+                        .descriptor_type(DescriptorType::SAMPLER)
+                        .image_info(texture_info)
+                        .build(),
+                ]
+                .into_iter()
+            }),
+    );
 
     unsafe {
         device.update_descriptor_sets(&writes, &[]);
@@ -930,6 +1057,7 @@ fn draw(
     swapchain_extent: Extent2D,
     graphics_pipeline: Pipeline,
     descriptor_sets: &[DescriptorSet],
+    texture_descriptor_sets: &[DescriptorSet],
 ) -> Result<()> {
     // wait on the fence being ready from the previou submit and reset after proceeding.
     unsafe {
@@ -959,6 +1087,7 @@ fn draw(
             swapchain_extent,
             graphics_pipeline,
             meshes,
+            texture_descriptor_sets,
             descriptor_sets,
             pipeline_layout,
             image_index as usize,
@@ -1104,6 +1233,7 @@ fn record_command_buffers(
     swapchain_extent: Extent2D,
     graphics_pipeline: Pipeline,
     meshes: &[Mesh],
+    texture_descriptor_sets: &[DescriptorSet],
     descriptor_sets: &[DescriptorSet],
     pipeline_layout: PipelineLayout,
     image_index: usize,
@@ -1158,7 +1288,7 @@ fn record_command_buffers(
                 PipelineBindPoint::GRAPHICS,
                 pipeline_layout,
                 0,
-                &[descriptor_set],
+                &[descriptor_set, texture_descriptor_sets[mesh.texture_index]],
                 &[],
             );
             // get a u8 slice containing the bytes of the PushModel.
@@ -1344,6 +1474,10 @@ fn create_graphics_pipeline(
             .location(1)
             .format(Format::R32G32B32_SFLOAT)
             .offset(12),
+        *VertexInputAttributeDescription::builder()
+            .location(2)
+            .format(Format::R32G32B32_SFLOAT)
+            .offset(24),
     ];
     let vertex_input = PipelineVertexInputStateCreateInfo::builder()
         .vertex_binding_descriptions(&binding_descriptions)
@@ -1557,6 +1691,7 @@ fn run_event_loop(
     swapchain_extent: Extent2D,
     graphics_pipeline: Pipeline,
     descriptor_sets: &[DescriptorSet],
+    texture_descriptor_sets: &[DescriptorSet],
 ) -> i32 {
     let PhysicalSize { width, height } = window.inner_size();
     let aspect = width as f32 / height as f32;
@@ -1608,6 +1743,7 @@ fn run_event_loop(
                     swapchain_extent,
                     graphics_pipeline,
                     descriptor_sets,
+                    texture_descriptor_sets,
                 )
                 .unwrap();
                 current_frame = (current_frame + 1) % max_frames;
@@ -1751,7 +1887,11 @@ fn get_physical_device(
                 if has_required_extensions {
                     let surface_info = get_surface_info(surface_ext, physical_device, surface)?;
                     if surface_info.is_valid() {
-                        return Ok((physical_device, queue_family_indices, surface_info));
+                        let device_features =
+                            unsafe { instance.get_physical_device_features(physical_device) };
+                        if device_features.sampler_anisotropy != 0 {
+                            return Ok((physical_device, queue_family_indices, surface_info));
+                        }
                     }
                 }
             }
@@ -1835,7 +1975,8 @@ fn create_logical_device(
                 physical_device,
                 &vk::DeviceCreateInfo::builder()
                     .queue_create_infos(&infos)
-                    .enabled_extension_names(&required_extensions),
+                    .enabled_extension_names(&required_extensions)
+                    .enabled_features(&PhysicalDeviceFeatures::builder().sampler_anisotropy(true)),
                 None,
             )
         }?;
@@ -1933,16 +2074,19 @@ fn cleanup(
     meshes: Vec<Mesh>,
     uniform_buffers: Vec<(Buffer, DeviceMemory)>,
     descriptor_pool: DescriptorPool,
-    descriptor_set_layout: DescriptorSetLayout,
+    descriptor_set_layouts: &[DescriptorSetLayout],
     images: &[Image],
     image_views: &[ImageView],
     device_memory: &[DeviceMemory],
     textures: &[Texture],
+    sampler: Sampler,
 ) {
     unsafe {
         device.device_wait_idle().unwrap();
         device.destroy_descriptor_pool(descriptor_pool, None);
-        device.destroy_descriptor_set_layout(descriptor_set_layout, None);
+        for descriptor_set_layout in descriptor_set_layouts {
+            device.destroy_descriptor_set_layout(*descriptor_set_layout, None);
+        }
         for (buffer, memory) in uniform_buffers {
             device.free_memory(memory, None);
             device.destroy_buffer(buffer, None);
@@ -1985,9 +2129,11 @@ fn cleanup(
             device.free_memory(*device_memory, None);
         }
         for texture in textures {
-            device.destroy_image(texture.image, None);
-            device.free_memory(texture.image_memory, None);
+            device.destroy_image_view(texture.view, None);
+            device.destroy_image(texture.image.image, None);
+            device.free_memory(texture.image.image_memory, None);
         }
+        device.destroy_sampler(sampler, None);
         device.destroy_device(None);
         surface_ext.destroy_surface(surface, None);
         instance.destroy_instance(None);
@@ -2076,14 +2222,14 @@ fn transition_image_layout(
 
 ///////////////////////// Textures //////////////////////////////
 
-fn create_texture(
+fn create_texture_image(
     instance: &Instance,
     device: &Device,
     physical_device: PhysicalDevice,
     transfer_queue: Queue,
     transfer_command_pool: CommandPool,
     path: impl AsRef<Path> + Clone + Display,
-) -> Result<Texture> {
+) -> Result<TextureImage> {
     let (image_data, width, height) = load_image_from_file(path.clone())
         .with_context(|| format!("Attempting to create texture for image at path {path}"))?;
     let image_size = (width * height * 4) as DeviceSize; // 4 bytes per pixel RGBA8
@@ -2183,10 +2329,68 @@ fn create_texture(
         device.free_memory(staging_buffer_memory, None);
     }
 
-    Ok(Texture {
+    Ok(TextureImage {
         image,
         image_memory,
         _width: width,
         _height: height,
     })
+}
+
+fn create_texture(
+    instance: &Instance,
+    device: &Device,
+    physical_device: PhysicalDevice,
+    transfer_queue: Queue,
+    transfer_command_pool: CommandPool,
+    path: impl AsRef<Path> + Clone + Display,
+) -> Result<Texture> {
+    let texture_image = create_texture_image(
+        instance,
+        device,
+        physical_device,
+        transfer_queue,
+        transfer_command_pool,
+        path.clone(),
+    )
+    .with_context(|| format!("Attempting to create a texture image at path {path}"))?;
+
+    let texture_image_view = create_image_view(
+        texture_image.image,
+        Format::R8G8B8A8_UNORM,
+        ImageAspectFlags::COLOR,
+        device,
+    )
+    .with_context(|| {
+        format!("Attempting to create an image view for texture image loaded from path {path}")
+    })?;
+
+    Ok(Texture {
+        image: texture_image,
+        view: texture_image_view,
+    })
+}
+
+fn create_texture_sampler(device: &Device) -> Result<Sampler> {
+    unsafe {
+        device
+            .create_sampler(
+                &SamplerCreateInfo::builder()
+                    .mag_filter(Filter::LINEAR)
+                    .min_filter(Filter::LINEAR)
+                    .address_mode_u(SamplerAddressMode::REPEAT)
+                    .address_mode_v(SamplerAddressMode::REPEAT)
+                    .address_mode_w(SamplerAddressMode::REPEAT)
+                    .border_color(BorderColor::INT_OPAQUE_BLACK)
+                    .unnormalized_coordinates(false)
+                    .mipmap_mode(SamplerMipmapMode::LINEAR)
+                    .mip_lod_bias(0.0)
+                    .min_lod(0.0)
+                    .max_lod(0.0)
+                    .anisotropy_enable(true)
+                    .max_anisotropy(16.0),
+                None,
+            )
+            .context("creating a texture sampler.")
+    }
 }
